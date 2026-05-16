@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.git/
+.env
+.env.*
+*.env
+config/testnet.yaml
+frontend/node_modules/
+frontend/.next/
+outputs/
+*.log

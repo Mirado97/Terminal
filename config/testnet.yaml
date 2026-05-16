@@ -1,0 +1,18 @@
+app:
+  env: testnet
+  log_level: DEBUG
+
+exchanges:
+  bybit:
+    testnet: true
+    rest_url: "https://api-testnet.bybit.com"
+    ws_url: "wss://stream-testnet.bybit.com/v5/public"
+  binance:
+    testnet: true
+    rest_url: "https://testnet.binance.vision"
+    ws_url: "wss://stream.testnet.binance.vision/ws"
+
+trading:
+  min_spread_bps: 5
+  max_position_usdt: 500
+  max_exposure_usdt: 2000

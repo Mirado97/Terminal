@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arbitrage-terminal
+  namespace: arbitrage
+  labels:
+    app: arbitrage-terminal
+spec:
+  replicas: 1   # арбитраж не масштабируется горизонтально без sharding по символам
+  selector:
+    matchLabels:
+      app: arbitrage-terminal
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: arbitrage-terminal
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: arbitrage-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+        - name: arbitrage
+          image: arbitrage-terminal:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: api
+            - containerPort: 9090
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: arbitrage-config
+            - secretRef:
+                name: arbitrage-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /app/config/production.yaml
+              subPath: production.yaml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: arbitrage-config
+
+---
+# ── Watchdog worker pool (горизонтальное масштабирование по символам) ─────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arbitrage-workers
+  namespace: arbitrage
+  labels:
+    app: arbitrage-workers
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: arbitrage-workers
+  template:
+    metadata:
+      labels:
+        app: arbitrage-workers
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: worker
+          image: arbitrage-terminal:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "watchdog.worker_main"]
+          envFrom:
+            - configMapRef:
+                name: arbitrage-config
+            - secretRef:
+                name: arbitrage-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"

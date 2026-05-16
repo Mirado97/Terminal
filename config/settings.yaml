@@ -1,0 +1,42 @@
+app:
+  name: arbitrage-terminal
+  env: development
+  log_level: INFO
+
+exchanges:
+  bybit:
+    testnet: false
+    rest_url: "https://api.bybit.com"
+    ws_url: "wss://stream.bybit.com/v5/public"
+    rate_limit:
+      requests_per_second: 10
+      orders_per_second: 5
+  binance:
+    testnet: false
+    rest_url: "https://api.binance.com"
+    ws_url: "wss://stream.binance.com:9443/ws"
+    rate_limit:
+      requests_per_second: 10
+      orders_per_second: 5
+
+trading:
+  min_spread_bps: 10
+  max_position_usdt: 1000
+  max_exposure_usdt: 5000
+  target_pairs:
+    - "BTCUSDT"
+    - "ETHUSDT"
+    - "SOLUSDT"
+
+risk:
+  max_drawdown_pct: 5.0
+  emergency_stop_loss_pct: 10.0
+  max_open_orders: 50
+
+storage:
+  postgres_url: "${POSTGRES_URL}"
+  redis_url: "${REDIS_URL}"
+
+monitoring:
+  prometheus_port: 9090
+  metrics_interval_sec: 1

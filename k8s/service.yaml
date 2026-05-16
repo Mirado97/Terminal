@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: arbitrage-sa
+  namespace: arbitrage
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arbitrage-api
+  namespace: arbitrage
+  labels:
+    app: arbitrage-terminal
+spec:
+  selector:
+    app: arbitrage-terminal
+  ports:
+    - name: api
+      port: 8080
+      targetPort: 8080
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arbitrage-api-external
+  namespace: arbitrage
+spec:
+  selector:
+    app: arbitrage-terminal
+  ports:
+    - name: api
+      port: 80
+      targetPort: 8080
+  type: LoadBalancer
+
+---
+# HPA для watchdog-воркеров по CPU
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: arbitrage-workers-hpa
+  namespace: arbitrage
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: arbitrage-workers
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
