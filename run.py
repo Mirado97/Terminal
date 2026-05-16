@@ -29,7 +29,7 @@ from risk.limits import RiskLimits
 from credentials.manager import ExchangeCredentials
 from spread.calculator import SpreadCalculator
 from spread.detector import SpreadDetector
-from spread.fees import FeeTable
+from spread.fees import FeeSchedule, FeeTable
 from watchdog.orchestrator import WatchdogOrchestrator
 
 # Текущий спред по каждой паре (symbol, buy, sell) → последнее значение
@@ -56,8 +56,8 @@ _FALLBACK_SYMBOLS = [
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 
-async def fetch_top_symbols(n: int = 100) -> list[str]:
-    """Топ N USDT-пар по объёму MEXC, доступных также на Bybit."""
+async def fetch_top_symbols(n_usdt: int = 80, n_usdc: int = 50) -> list[str]:
+    """Топ USDT-пар + USDC zero-fee пары, доступных на обеих биржах."""
     headers = {"User-Agent": _UA}
     try:
         async with aiohttp.ClientSession(
@@ -72,27 +72,36 @@ async def fetch_top_symbols(n: int = 100) -> list[str]:
             bybit_symbols = {
                 t["symbol"]
                 for t in bybit_data.get("result", {}).get("list", [])
-                if t["symbol"].endswith("USDT")
             }
 
             async with session.get("https://api.mexc.com/api/v3/ticker/24hr") as r:
                 mexc_tickers: list[dict] = await r.json(content_type=None)
 
-        mexc_pairs: list[tuple[str, float]] = []
-        for t in mexc_tickers:
-            sym = t.get("symbol", "")
-            if sym.endswith("USDT") and sym in bybit_symbols:
-                vol = float(t.get("quoteVolume", 0) or 0)
-                mexc_pairs.append((sym, vol))
+        mexc_by_symbol = {t["symbol"]: float(t.get("quoteVolume", 0) or 0) for t in mexc_tickers}
 
-        mexc_pairs.sort(key=lambda x: x[1], reverse=True)
-        symbols = [sym for sym, _ in mexc_pairs[:n]]
-        print(f"  Загружено {len(symbols)} пар (топ {n} по объёму MEXC∩Bybit)")
+        # USDT пары (стандартная комиссия MEXC 20 bps)
+        usdt_pairs = sorted(
+            [(sym, vol) for sym, vol in mexc_by_symbol.items()
+             if sym.endswith("USDT") and sym in bybit_symbols],
+            key=lambda x: x[1], reverse=True,
+        )
+        usdt_symbols = [sym for sym, _ in usdt_pairs[:n_usdt]]
+
+        # USDC пары (0% комиссия на MEXC)
+        usdc_pairs = sorted(
+            [(sym, vol) for sym, vol in mexc_by_symbol.items()
+             if sym.endswith("USDC") and sym in bybit_symbols],
+            key=lambda x: x[1], reverse=True,
+        )
+        usdc_symbols = [sym for sym, _ in usdc_pairs[:n_usdc]]
+
+        symbols = usdt_symbols + usdc_symbols
+        print(f"  Загружено {len(usdt_symbols)} USDT + {len(usdc_symbols)} USDC пар (MEXC∩Bybit)")
         return symbols
 
     except Exception as exc:
         print(f"  Не удалось загрузить пары ({exc}), используем fallback-список")
-        return _FALLBACK_SYMBOLS[:n]
+        return _FALLBACK_SYMBOLS[:n_usdt]
 
 
 async def run() -> None:
@@ -126,8 +135,12 @@ async def run() -> None:
     mexc.on_orderbook(ob_engine.handle)
 
     # ── Spread Detection ──────────────────────────────────────────
-    fee_table  = FeeTable()
-    calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
+    fee_table      = FeeTable()
+    fee_table_usdc = FeeTable(overrides={
+        (Exchange.MEXC, MarketType.SPOT): FeeSchedule(maker_bps=0.0, taker_bps=0.0),
+    })
+    calculator      = SpreadCalculator(fee_table=fee_table,      latency_us=10_000)
+    calculator_usdc = SpreadCalculator(fee_table=fee_table_usdc, latency_us=10_000)
     detector   = SpreadDetector(
         engine                     = ob_engine,
         calculator                 = calculator,
@@ -163,11 +176,12 @@ async def run() -> None:
             for symbol, book_list in by_symbol.items():
                 if len(book_list) < 2:
                     continue
+                calc = calculator_usdc if symbol.endswith("USDC") else calculator
                 for buy_book in book_list:
                     for sell_book in book_list:
                         if buy_book is sell_book:
                             continue
-                        result = calculator.compute(buy_book, sell_book, 1_000.0)
+                        result = calc.compute(buy_book, sell_book, 1_000.0)
                         if result is None or result.size_usdt < 10 or result.raw_spread_bps > 500:
                             continue
                         key = (symbol, buy_book.exchange.value, sell_book.exchange.value)
