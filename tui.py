@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -42,14 +44,12 @@ _trades: list[dict] = []
 _positions: dict[tuple, dict] = {}
 _portfolio = {"balance": 100.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
 _trades_page = 0
-_last_page_advance = time.time()
 
 VIRTUAL_SIZE_USDT = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
 ENTRY_THRESHOLD   = 5.0    # bps executable — порог входа
 EXIT_THRESHOLD    = -2.0   # bps executable — порог выхода
 MAX_POSITIONS     = 3
 TRADES_PER_PAGE   = 10
-PAGE_INTERVAL_S   = 10.0   # авто-переключение страницы истории
 
 
 def _virtual_update() -> None:
@@ -131,14 +131,6 @@ def _pnl_str(val: float, decimals: int = 4) -> str:
 
 
 def build_ui() -> Layout:
-    global _trades_page, _last_page_advance
-
-    # Авто-переключение страницы истории
-    if time.time() - _last_page_advance > PAGE_INTERVAL_S:
-        n_pages = max(1, (len(_trades) + TRADES_PER_PAGE - 1) // TRADES_PER_PAGE)
-        _trades_page = (_trades_page + 1) % n_pages
-        _last_page_advance = time.time()
-
     layout = Layout()
     layout.split_column(
         Layout(name="header",  size=3),
@@ -234,7 +226,7 @@ def build_ui() -> Layout:
     layout["history"].update(Panel(
         hist_tbl,
         title="[bold]История виртуальных сделок[/]",
-        subtitle=f"[dim]стр. {page + 1}/{n_pages}  авто {PAGE_INTERVAL_S:.0f}с[/]",
+        subtitle=f"[dim]стр. {page + 1}/{n_pages}  ← → для переключения[/]",
     ))
 
     # ── Spreads (топ 5) ──────────────────────────────────────────────────
@@ -429,6 +421,46 @@ async def bot_main(symbols: list[str]) -> None:
     await _stats_loop()
 
 
+# ── Keyboard listener (Linux) ─────────────────────────────────────────────
+
+def _start_key_listener() -> None:
+    """Фоновый поток: стрелки ← → переключают страницы истории."""
+    try:
+        import select
+        import signal
+        import termios
+        import tty
+    except ImportError:
+        return  # Windows — пропускаем
+
+    global _trades_page
+    fd  = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = sys.stdin.buffer.read(1)
+            if ch == b"\x1b":
+                # escape-sequence: стрелка = ESC [ C/D
+                if select.select([sys.stdin], [], [], 0.05)[0]:
+                    seq = sys.stdin.buffer.read(2)
+                    n_pages = max(1, (len(_trades) + TRADES_PER_PAGE - 1) // TRADES_PER_PAGE)
+                    if seq in (b"[C", b"OC"):   # → вправо
+                        _trades_page = (_trades_page + 1) % n_pages
+                    elif seq in (b"[D", b"OD"): # ← влево
+                        _trades_page = (_trades_page - 1) % n_pages
+            elif ch in (b"q", b"Q", b"\x03"):   # q / Ctrl+C
+                os.kill(os.getpid(), signal.SIGINT)
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception:
+            pass
+
+
 # ── Entry point ───────────────────────────────────────────────────────────
 
 async def main() -> None:
@@ -442,6 +474,8 @@ async def main() -> None:
     _stats["pairs"] = len(symbols)
 
     bot_task = asyncio.create_task(bot_main(symbols))
+
+    threading.Thread(target=_start_key_listener, daemon=True).start()
 
     console = Console()
     with Live(
