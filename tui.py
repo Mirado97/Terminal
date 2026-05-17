@@ -42,8 +42,11 @@ FEE_BPS = 12.2
 # ── Virtual trading ───────────────────────────────────────────────────────
 _trades: list[dict] = []
 _positions: dict[tuple, dict] = {}
-_portfolio = {"balance": 100.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
+_portfolio  = {"balance": 100.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
+_cooldown: dict[str, float] = {}   # symbol → monotonic time когда кулдаун истекает
 _trades_page = 0
+
+COOLDOWN_S = 1800   # 30 минут после тайм-аут закрытия
 
 VIRTUAL_SIZE_USDT  = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
 ENTRY_THRESHOLD    = 5.0    # bps executable — порог входа
@@ -367,10 +370,12 @@ async def bot_main(symbols: list[str]) -> None:
                     })
                     if len(_trades) > 500:
                         _trades.pop(0)
+                    if close_reason == "тайм-аут":
+                        _cooldown[sym] = now_mono + COOLDOWN_S
                     del _positions[key]
             else:
                 # Проверяем вход
-                if ep > ENTRY_THRESHOLD and len(_positions) < MAX_POSITIONS and sym not in _BLACKLIST:
+                if ep > ENTRY_THRESHOLD and len(_positions) < MAX_POSITIONS and sym not in _BLACKLIST and _cooldown.get(sym, 0) < now_mono:
                     spread_entry = _spread_map.get(key)
                     reaction_ms  = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
                     _positions[key] = {
