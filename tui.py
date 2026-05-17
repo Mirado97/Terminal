@@ -5,12 +5,16 @@ tui.py — Terminal UI для арбитражного бота.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import os
 import sys
 import time
 from pathlib import Path
+
+import aiohttp
 
 from dotenv import load_dotenv
 from rich import box
@@ -35,7 +39,9 @@ _stats = {
     "bybit_connected": False,
     "mexc_connected":  False,
     "start_time":      time.time(),
+    "mx_balance":      -1.0,   # MX токен MEXC (для оплаты комиссий)
 }
+_paused: bool = False
 
 FEE_BPS = 12.2
 
@@ -113,13 +119,17 @@ def build_ui() -> Layout:
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
     bal  = _portfolio["balance"]
+    mx   = _stats["mx_balance"]
+    mx_str = f"[green]{mx:.1f}[/]" if mx >= 10 else (f"[red]{mx:.1f}[/]" if mx >= 0 else "[dim]N/A[/]")
+    pause_str = "  [bold red blink]⏸ ПАУЗА[/]" if _paused else ""
 
     layout["header"].update(Panel(
         Text.from_markup(
-            f"[bold cyan]◈ ARBITRAGE TERMINAL[/]  Bybit: {bybit_s}  MEXC Futures: {mexc_s}  │  "
+            f"[bold cyan]◈ ARBITRAGE TERMINAL[/]  Bybit: {bybit_s}  MEXC: {mexc_s}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Прибыльных: [green]{_stats['profitable']}[/]  "
-            f"Лучший: {best}  Uptime: [dim]{_uptime()}[/]  │  "
-            f"Виртуал: [yellow]${bal:.2f}[/]  R:{_pnl_str(rpnl, 4)}  U:{_pnl_str(upnl, 4)}"
+            f"Лучший: {best}  Up: [dim]{_uptime()}[/]  │  "
+            f"MX: {mx_str}  Виртуал: [yellow]${bal:.2f}[/]  R:{_pnl_str(rpnl, 4)}  U:{_pnl_str(upnl, 4)}"
+            f"{pause_str}"
         ),
         style="on grey7",
     ))
@@ -269,7 +279,7 @@ def build_ui() -> Layout:
     # ── Footer ───────────────────────────────────────────────────────────
     layout["footer"].update(
         Text.from_markup(
-            "  [dim]q / Ctrl+C — выход   │  "
+            "  [dim]q / Ctrl+C — выход   │  P — пауза/старт бота   │  "
             "Зелёный = прибыльный спред после комиссий[/]"
         )
     )
@@ -384,7 +394,7 @@ async def bot_main(symbols: list[str]) -> None:
                     if close_reason == "тайм-аут":
                         _cooldown[sym] = now_mono + COOLDOWN_S
                     del _positions[key]
-            else:
+            elif not _paused:
                 # Проверяем вход — с задержкой 100мс (симуляция исполнения + нога-риск)
                 if (ep > ENTRY_THRESHOLD
                         and len(_positions) < MAX_POSITIONS
@@ -424,8 +434,30 @@ async def bot_main(symbols: list[str]) -> None:
 
     ob_engine.on_update(_on_book_update)
 
+    async def _fetch_mx_balance() -> None:
+        api_key    = mexc_creds.api_key
+        api_secret = mexc_creds.api_secret
+        if not api_key or not api_secret:
+            return
+        try:
+            ts     = str(int(time.time() * 1000))
+            params = f"timestamp={ts}"
+            sig    = hmac.new(api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
+            url    = f"https://api.mexc.com/api/v3/account?{params}&signature={sig}"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+                async with s.get(url, headers={"X-MEXC-APIKEY": api_key}) as r:
+                    data = await r.json(content_type=None)
+            for b in data.get("balances", []):
+                if b["asset"] == "MX":
+                    _stats["mx_balance"] = float(b.get("free", 0)) + float(b.get("locked", 0))
+                    return
+            _stats["mx_balance"] = 0.0
+        except Exception:
+            pass
+
     # Лёгкий цикл: обновляет статистику и чистит устаревшие записи из карты
     async def _stats_loop() -> None:
+        _mx_fetch_t = [0.0]
         while True:
             await asyncio.sleep(1)
             now = time.monotonic()
@@ -447,6 +479,11 @@ async def bot_main(symbols: list[str]) -> None:
                 VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - _spread_map[k]["executable_spread_bps"]) / 10_000
                 for k, pos in _positions.items() if k in _spread_map
             ), 4)
+
+            # MX баланс раз в 60 секунд
+            if now - _mx_fetch_t[0] > 60:
+                _mx_fetch_t[0] = now
+                asyncio.create_task(_fetch_mx_balance())
 
     await bybit.connect()
     await mexc.connect()
@@ -470,7 +507,7 @@ async def _key_task() -> None:
     except ImportError:
         return  # Windows — пропускаем
 
-    global _trades_page
+    global _trades_page, _paused
     fd  = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -498,6 +535,8 @@ async def _key_task() -> None:
                         _trades_page = (_trades_page + 1) % n_pages
                     elif ch3 == b"5": # PageUp
                         _trades_page = (_trades_page - 1) % n_pages
+            elif ch in (b"p", b"P"):
+                _paused = not _paused
             elif ch in (b"q", b"Q", b"\x03"):
                 os.kill(os.getpid(), signal.SIGINT)
                 break
