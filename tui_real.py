@@ -54,6 +54,7 @@ _cooldown: dict[str, float] = {}
 _pending_entries: set[tuple] = set()
 _trades_page = 0
 _bybit_qty_steps: dict[str, float] = {}  # symbol → qtyStep из instruments-info
+_last_entry_at: float = 0.0              # monotonic time последнего входа
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -61,30 +62,32 @@ LOG_DIR.mkdir(exist_ok=True)
 TRADES_PER_PAGE = 10
 
 # ── Горячий конфиг ────────────────────────────────────────────────────────
-VIRTUAL_SIZE_USDT  = 50.0
-ENTRY_THRESHOLD    = 15.0
-EXIT_THRESHOLD     = -2.0
-DYNAMIC_EXIT_RATIO = 0.20
-MAX_HOLD_S         = 60
-MAX_POSITIONS      = 3
-COOLDOWN_S         = 1800
+VIRTUAL_SIZE_USDT    = 50.0
+ENTRY_THRESHOLD      = 15.0
+EXIT_THRESHOLD       = -2.0
+DYNAMIC_EXIT_RATIO   = 0.20
+MAX_HOLD_S           = 60
+MAX_POSITIONS        = 3
+COOLDOWN_S           = 1800
+MIN_ENTRY_INTERVAL_S = 60.0
 
 
 def _reload_config() -> None:
     global ENTRY_THRESHOLD, EXIT_THRESHOLD, MAX_HOLD_S, DYNAMIC_EXIT_RATIO
-    global MAX_POSITIONS, COOLDOWN_S, VIRTUAL_SIZE_USDT
+    global MAX_POSITIONS, COOLDOWN_S, VIRTUAL_SIZE_USDT, MIN_ENTRY_INTERVAL_S
     try:
         if "config" in sys.modules:
             mod = importlib.reload(sys.modules["config"])
         else:
             import config as mod  # type: ignore
-        ENTRY_THRESHOLD    = float(getattr(mod, "ENTRY_THRESHOLD",    ENTRY_THRESHOLD))
-        EXIT_THRESHOLD     = float(getattr(mod, "EXIT_THRESHOLD",     EXIT_THRESHOLD))
-        MAX_HOLD_S         = int(getattr(mod,   "MAX_HOLD_S",         MAX_HOLD_S))
-        DYNAMIC_EXIT_RATIO = float(getattr(mod, "DYNAMIC_EXIT_RATIO", DYNAMIC_EXIT_RATIO))
-        MAX_POSITIONS      = int(getattr(mod,   "MAX_POSITIONS",      MAX_POSITIONS))
-        COOLDOWN_S         = int(getattr(mod,   "COOLDOWN_S",         COOLDOWN_S))
-        VIRTUAL_SIZE_USDT  = float(getattr(mod, "VIRTUAL_SIZE_USDT",  VIRTUAL_SIZE_USDT))
+        ENTRY_THRESHOLD      = float(getattr(mod, "ENTRY_THRESHOLD",      ENTRY_THRESHOLD))
+        EXIT_THRESHOLD       = float(getattr(mod, "EXIT_THRESHOLD",       EXIT_THRESHOLD))
+        MAX_HOLD_S           = int(getattr(mod,   "MAX_HOLD_S",           MAX_HOLD_S))
+        DYNAMIC_EXIT_RATIO   = float(getattr(mod, "DYNAMIC_EXIT_RATIO",   DYNAMIC_EXIT_RATIO))
+        MAX_POSITIONS        = int(getattr(mod,   "MAX_POSITIONS",        MAX_POSITIONS))
+        COOLDOWN_S           = int(getattr(mod,   "COOLDOWN_S",           COOLDOWN_S))
+        VIRTUAL_SIZE_USDT    = float(getattr(mod, "VIRTUAL_SIZE_USDT",    VIRTUAL_SIZE_USDT))
+        MIN_ENTRY_INTERVAL_S = float(getattr(mod, "MIN_ENTRY_INTERVAL_S", MIN_ENTRY_INTERVAL_S))
     except Exception:
         pass
 
@@ -381,6 +384,7 @@ async def bot_main_real(symbols: list[str]) -> None:
             await mexc.close_short(sym, qty, price)
 
     async def _on_book_update(updated) -> None:
+        global _last_entry_at
         if not updated.is_synced or updated.is_stale:
             return
         sym   = updated.symbol
@@ -477,11 +481,13 @@ async def bot_main_real(symbols: list[str]) -> None:
                         and len(_positions) < MAX_POSITIONS
                         and sym not in _BLACKLIST
                         and _cooldown.get(sym, 0) < now_mono
-                        and key not in _pending_entries):
+                        and key not in _pending_entries
+                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S):
 
                     spread_entry = _spread_map.get(key)
                     reaction_ms = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
                     _pending_entries.add(key)
+                    _last_entry_at = now_mono  # блокируем следующий вход на MIN_ENTRY_INTERVAL_S
 
                     async def _delayed_entry_real(
                         _key=key, _sym=sym,
