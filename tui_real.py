@@ -159,15 +159,14 @@ def build_ui() -> Layout:
 
     layout["header"].update(Panel(
         Text.from_markup(
-            f"[bold red]◈ REAL TRADING[/]  "
-            f"Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
+            f"[bold cyan]◈ REAL TRADING[/]  Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
             f"MEXC: {mexc_s} {_bal_str(_stats['mexc_usdt'])}{mx_r}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
             f"MX: {mx_str}  "
             f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
             f"{pause_str}"
         ),
-        style="on dark_red",
+        style="on grey7",
     ))
 
     # ── Открытые позиции ─────────────────────────────────────────────────
