@@ -328,7 +328,7 @@ async def bot_main(symbols: list[str]) -> None:
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
 
-    # Событийный расчёт спреда — срабатывает мгновенно при каждом тикере
+    # Мгновенный обработчик каждого тикера: пересчёт спреда + вход/выход виртуала
     async def _on_book_update(updated) -> None:
         if not updated.is_synced or updated.is_stale:
             return
@@ -338,6 +338,7 @@ async def bot_main(symbols: list[str]) -> None:
         other    = ob_engine.get(other_ex, sym, mtype)
         if other is None or not other.is_synced or other.is_stale:
             return
+
         for buy_b, sell_b in [(updated, other), (other, updated)]:
             if buy_b.best_bid <= 0 or sell_b.best_ask <= 0:
                 continue
@@ -345,16 +346,52 @@ async def bot_main(symbols: list[str]) -> None:
             if res is None or res.size_usdt < 10 or res.raw_spread_bps > 500:
                 continue
             key = (sym, buy_b.exchange.value, sell_b.exchange.value)
+            ep  = round(res.executable_spread_bps, 2)
             _spread_map[key] = {
                 "symbol":                sym,
                 "buy_exchange":          buy_b.exchange.value,
                 "sell_exchange":         sell_b.exchange.value,
                 "raw_spread_bps":        round(res.raw_spread_bps, 2),
-                "executable_spread_bps": round(res.executable_spread_bps, 2),
+                "executable_spread_bps": ep,
                 "fee_cost_bps":          FEE_BPS,
                 "created_at":            time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "_ts":                   time.monotonic(),
             }
+
+            # ── Виртуальная торговля: решение мгновенно на каждом тикере ──
+            pos = _positions.get(key)
+
+            if pos is not None:
+                # Проверяем выход
+                if ep < EXIT_THRESHOLD:
+                    entry_ep = pos["entry_executable_bps"]
+                    pnl_bps  = entry_ep - ep
+                    pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 4)
+                    _portfolio["realized_pnl"] += pnl_usdt
+                    _portfolio["balance"]      += pnl_usdt
+                    hold_s = int(time.time() - pos["opened_at"])
+                    _trades.append({
+                        "symbol":    sym,
+                        "entry_bps": round(entry_ep, 2),
+                        "exit_bps":  ep,
+                        "pnl_bps":   round(pnl_bps, 2),
+                        "pnl_usdt":  pnl_usdt,
+                        "hold":      f"{hold_s//60}м{hold_s%60:02d}с",
+                        "time":      time.strftime("%H:%M:%S"),
+                    })
+                    if len(_trades) > 500:
+                        _trades.pop(0)
+                    del _positions[key]
+            else:
+                # Проверяем вход
+                if ep > ENTRY_THRESHOLD and len(_positions) < MAX_POSITIONS and sym not in _BLACKLIST:
+                    _positions[key] = {
+                        "symbol":               sym,
+                        "buy_exchange":         buy_b.exchange.value,
+                        "sell_exchange":        sell_b.exchange.value,
+                        "entry_executable_bps": ep,
+                        "opened_at":            time.time(),
+                    }
 
     ob_engine.on_update(_on_book_update)
 
@@ -376,7 +413,11 @@ async def bot_main(symbols: list[str]) -> None:
                 _stats["best_spread"] = best["executable_spread_bps"]
                 _stats["best_symbol"] = best["symbol"]
 
-            _virtual_update()
+            # Нереализованный PnL
+            _portfolio["unrealized_pnl"] = round(sum(
+                VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - _spread_map[k]["executable_spread_bps"]) / 10_000
+                for k, pos in _positions.items() if k in _spread_map
+            ), 4)
 
     await bybit.connect()
     await mexc.connect()
