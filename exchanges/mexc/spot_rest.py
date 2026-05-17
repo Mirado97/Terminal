@@ -45,13 +45,15 @@ class MexcSpotRestClient:
             "timestamp": str(int(time.time() * 1000)),
         }
         data = await self._signed_post("/api/v3/order", params)
-        token_qty = float(data.get("executedQty") or data.get("origQty") or 0)
+        token_qty = float(data.get("executedQty") or 0)
         if token_qty <= 0:
-            # запасной вариант — оценка
-            spent = float(data.get("cummulativeQuoteQty") or usdt_amount)
-            last_price = float(data.get("price") or 0)
-            if last_price > 0:
-                token_qty = spent / last_price
+            # MEXC не возвращает executedQty для market+quoteOrderQty
+            # считаем из цены исполнения
+            price_f = float(data.get("price") or 0)
+            if price_f > 0:
+                token_qty = usdt_amount / price_f
+        if token_qty <= 0:
+            raise RuntimeError(f"MEXC Spot: не удалось получить qty из ответа: {data}")
         return Order(
             id=str(data.get("orderId", "")),
             client_order_id=params["newClientOrderId"],
