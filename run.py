@@ -37,7 +37,7 @@ _BLACKLIST = {
     "XAGUSDT",    # серебро
     "BTCDOMUSDT",
     "IRYSUSDT",   # структурный спред — не схлопывается
-    "BPUUSDT",    # структурный спред — не схлопывается
+    "BPUSDT",     # структурный спред — не схлопывается
 }
 
 _FALLBACK_SYMBOLS = [
