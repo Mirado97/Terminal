@@ -55,6 +55,8 @@ class BitgetAdapterReal(BaseExchange):
 
     async def open_long(self, symbol: str, qty_usdt: float, ref_price: float) -> Order:
         size = self._rest.compute_size(symbol, qty_usdt, ref_price)
+        if size == 0:
+            raise ValueError(f"Bitget {symbol}: min order exceeds budget {qty_usdt} USDT")
         return await self._rest.place_order(symbol, "buy", "open", size)
 
     async def close_long(self, symbol: str, token_qty: float, ref_price: float) -> Order:
@@ -62,6 +64,8 @@ class BitgetAdapterReal(BaseExchange):
 
     async def open_short(self, symbol: str, qty_usdt: float, ref_price: float) -> Order:
         size = self._rest.compute_size(symbol, qty_usdt, ref_price)
+        if size == 0:
+            raise ValueError(f"Bitget {symbol}: min order exceeds budget {qty_usdt} USDT")
         return await self._rest.place_order(symbol, "sell", "open", size)
 
     async def close_short(self, symbol: str, token_qty: float, ref_price: float) -> Order:

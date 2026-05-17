@@ -56,14 +56,20 @@ class BitgetFuturesRestClient:
         logger.info("Bitget контракты загружены", count=len(self.contract_specs))
 
     def compute_size(self, symbol: str, qty_usdt: float, price: float) -> float:
-        """USDT → количество контрактов Bitget."""
+        """USDT → количество контрактов Bitget. Возвращает 0 если минимум превышает бюджет."""
         if price <= 0:
             return 0
         spec = self.contract_specs.get(symbol, {})
         sm   = float(spec.get("size_multiplier", 1.0) or 1.0)
         minn = float(spec.get("min_trade_num",   1.0) or 1.0)
         raw  = qty_usdt / (price * sm)
-        return max(minn, round(raw / minn) * minn)
+        size = max(minn, round(raw / minn) * minn)
+        actual_usdt = size * price * sm
+        if actual_usdt > qty_usdt * 3:
+            logger.warning("Bitget min order too large", symbol=symbol,
+                           min_usdt=round(actual_usdt, 2), budget=qty_usdt)
+            return 0
+        return size
 
     async def place_order(
         self, symbol: str, side: str, trade_side: str, size: float
