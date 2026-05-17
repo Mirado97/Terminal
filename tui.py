@@ -43,7 +43,8 @@ FEE_BPS = 12.2
 _trades: list[dict] = []
 _positions: dict[tuple, dict] = {}
 _portfolio  = {"balance": 300.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
-_cooldown: dict[str, float] = {}   # symbol → monotonic time когда кулдаун истекает
+_cooldown: dict[str, float] = {}       # symbol → monotonic time когда кулдаун истекает
+_pending_entries: set[tuple] = set()   # ключи с задержанным входом (100мс)
 _trades_page = 0
 
 COOLDOWN_S = 1800   # 30 минут после тайм-аут закрытия
@@ -361,7 +362,7 @@ async def bot_main(symbols: list[str]) -> None:
                     close_reason = "тайм-аут"
 
                 if close_reason:
-                    pnl_bps  = entry_ep - ep
+                    pnl_bps  = entry_ep - ep - FEE_BPS   # entry_ep уже нет вход.комиссий, вычитаем выход
                     pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 4)
                     _portfolio["realized_pnl"] += pnl_usdt
                     _portfolio["balance"]      += pnl_usdt
@@ -384,21 +385,42 @@ async def bot_main(symbols: list[str]) -> None:
                         _cooldown[sym] = now_mono + COOLDOWN_S
                     del _positions[key]
             else:
-                # Проверяем вход
-                if ep > ENTRY_THRESHOLD and len(_positions) < MAX_POSITIONS and sym not in _BLACKLIST and _cooldown.get(sym, 0) < now_mono:
+                # Проверяем вход — с задержкой 100мс (симуляция исполнения + нога-риск)
+                if (ep > ENTRY_THRESHOLD
+                        and len(_positions) < MAX_POSITIONS
+                        and sym not in _BLACKLIST
+                        and _cooldown.get(sym, 0) < now_mono
+                        and key not in _pending_entries):
                     spread_entry = _spread_map.get(key)
-                    reaction_ms  = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
-                    _positions[key] = {
-                        "symbol":               sym,
-                        "buy_exchange":         buy_b.exchange.value,
-                        "sell_exchange":        sell_b.exchange.value,
-                        "entry_executable_bps": ep,
-                        "entry_buy_price":      buy_b.best_ask,
-                        "entry_sell_price":     sell_b.best_bid,
-                        "opened_at":            time.time(),
-                        "opened_at_mono":       now_mono,
-                        "reaction_ms":          reaction_ms,
-                    }
+                    reaction_ms = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
+                    _pending_entries.add(key)
+
+                    async def _delayed_entry(
+                        _key=key, _sym=sym,
+                        _buy_ex=buy_b.exchange.value, _sell_ex=sell_b.exchange.value,
+                        _reaction=reaction_ms,
+                    ) -> None:
+                        await asyncio.sleep(0.1)
+                        _pending_entries.discard(_key)
+                        if _key in _positions or len(_positions) >= MAX_POSITIONS:
+                            return
+                        current = _spread_map.get(_key)
+                        if current is None or current["executable_spread_bps"] < ENTRY_THRESHOLD:
+                            return  # спред исчез — нога не заполнилась
+                        actual_ep = current["executable_spread_bps"]
+                        _positions[_key] = {
+                            "symbol":               _sym,
+                            "buy_exchange":         _buy_ex,
+                            "sell_exchange":        _sell_ex,
+                            "entry_executable_bps": actual_ep,
+                            "entry_buy_price":      current.get("buy_price", 0.0),
+                            "entry_sell_price":     current.get("sell_price", 0.0),
+                            "opened_at":            time.time(),
+                            "opened_at_mono":       time.monotonic(),
+                            "reaction_ms":          _reaction,
+                        }
+
+                    asyncio.create_task(_delayed_entry())
 
     ob_engine.on_update(_on_book_update)
 
