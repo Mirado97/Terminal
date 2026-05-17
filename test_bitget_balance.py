@@ -1,4 +1,4 @@
-"""Диагностика Bitget auth — пробуем несколько endpoints."""
+"""Диагностика Bitget — полный вывод запроса + spot endpoint."""
 import asyncio
 import base64
 import hashlib
@@ -16,17 +16,18 @@ KEY = os.environ.get("BITGET_API_KEY", "")
 SEC = os.environ.get("BITGET_API_SECRET", "")
 PP  = os.environ.get("BITGET_PASSPHRASE", "")
 
-print(f"KEY длина:        {len(KEY)}")
-print(f"SECRET длина:     {len(SEC)}")
-print(f"PASSPHRASE длина: {len(PP)}")
+print(f"KEY:        {KEY[:8]}...{KEY[-4:]}")
+print(f"SEC длина:  {len(SEC)}  первые 8: {SEC[:8]}")
+print(f"PP:         [{PP}]  длина: {len(PP)}")
 
 
-def sign(method: str, path: str) -> dict:
+def sign(method: str, path: str) -> tuple[dict, str]:
     ts  = str(int(time.time() * 1000))
     msg = ts + method + path
-    sig = base64.b64encode(
-        hmac.new(SEC.encode(), msg.encode(), hashlib.sha256).digest()
-    ).decode()
+    raw = hmac.new(SEC.encode(), msg.encode(), hashlib.sha256).digest()
+    sig = base64.b64encode(raw).decode()
+    print(f"\n  prehash: {msg[:80]}")
+    print(f"  sig:     {sig}")
     return {
         "ACCESS-KEY":        KEY,
         "ACCESS-SIGN":       sig,
@@ -34,25 +35,25 @@ def sign(method: str, path: str) -> dict:
         "ACCESS-PASSPHRASE": PP,
         "Content-Type":      "application/json",
         "locale":            "en-US",
-    }
+    }, ts
 
 
 async def get(s: aiohttp.ClientSession, label: str, path: str) -> None:
+    hdrs, ts = sign("GET", path)
     url = f"https://api.bitget.com{path}"
-    hdrs = sign("GET", path)
     async with s.get(url, headers=hdrs) as r:
         text = await r.text()
-        print(f"\n[{label}]  status={r.status}  {text[:300]}")
+        print(f"  [{label}] {r.status}: {text[:300]}")
 
 
 async def main() -> None:
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-        # 1. Общая информация об аккаунте (не требует futures)
-        await get(s, "account/info", "/api/v2/account/info")
-        # 2. USDT-FUTURES баланс
-        await get(s, "USDT-FUTURES", "/api/v2/mix/account/account?productType=USDT-FUTURES&marginCoin=USDT")
-        # 3. COIN-FUTURES баланс (вдруг другой тип)
-        await get(s, "COIN-FUTURES", "/api/v2/mix/account/account?productType=COIN-FUTURES&marginCoin=BTC")
+        # Spot — самый простой приватный endpoint
+        await get(s, "spot assets",    "/api/v2/spot/account/assets")
+        # Futures USDT
+        await get(s, "USDT-FUTURES",   "/api/v2/mix/account/account?productType=USDT-FUTURES&marginCoin=USDT")
+        # Список всех фьюч-аккаунтов (без productType)
+        await get(s, "account list",   "/api/v2/mix/account/accounts?productType=USDT-FUTURES")
 
 
 asyncio.run(main())
