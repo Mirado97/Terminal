@@ -504,6 +504,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                         try:
                             buy_id, buy_qty = await _do_open_long(_buy_ex, _sym, buy_price)
                         except Exception as e:
+                            _cooldown[_sym] = time.monotonic() + 60  # не спамим при ошибке
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                             with open(log_file, "a") as f:
                                 f.write(f"{time.strftime('%H:%M:%S')} OPEN LONG ERROR {_sym}: {e}\n")
@@ -513,6 +514,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                         try:
                             sell_id, sell_qty = await _do_open_short(_sell_ex, _sym, sell_price)
                         except Exception as e:
+                            _cooldown[_sym] = time.monotonic() + 60  # не спамим при ошибке
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                             with open(log_file, "a") as f:
                                 f.write(f"{time.strftime('%H:%M:%S')} OPEN SHORT ERROR {_sym}: {e}\n")
