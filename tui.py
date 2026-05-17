@@ -49,7 +49,7 @@ VIRTUAL_SIZE_USDT  = 50.0   # размер позиции на сторону (�
 ENTRY_THRESHOLD    = 5.0    # bps executable — порог входа
 EXIT_THRESHOLD     = -2.0   # bps executable — порог выхода (спред развернулся)
 DYNAMIC_EXIT_RATIO = 0.20   # выход когда осталось ≤20% от входного спреда (захвачено 80%)
-MAX_HOLD_S         = 600    # принудительный выход через 10 минут
+MAX_HOLD_S         = 60     # принудительный выход через 1 минуту
 MAX_POSITIONS      = 3
 TRADES_PER_PAGE    = 10
 
