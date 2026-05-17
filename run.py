@@ -38,6 +38,7 @@ _BLACKLIST = {
     "BTCDOMUSDT",
     "IRYSUSDT",   # структурный спред — не схлопывается
     "BPUSDT",     # структурный спред — не схлопывается
+    "MAVIAUSDT",  # структурный спред — не схлопывается
 }
 
 _FALLBACK_SYMBOLS = [
