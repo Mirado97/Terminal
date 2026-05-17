@@ -315,7 +315,7 @@ def _bybit_qty(sym: str, size_usdt: float, price: float) -> float:
 async def bot_main_real(symbols: list[str]) -> None:
     from core.models import Exchange, MarketType, OrderSide, OrderType
     from exchanges.bybit.adapter import BybitAdapter
-    from exchanges.mexc.spot_adapter_real import MexcSpotAdapterReal
+    from exchanges.mexc.hybrid_adapter_real import MexcHybridAdapterReal
     from orderbook.engine import OrderBookEngine
     from spread.calculator import SpreadCalculator
     from spread.fees import FeeSchedule, FeeTable
@@ -332,7 +332,7 @@ async def bot_main_real(symbols: list[str]) -> None:
 
     bybit_cfg = {"testnet": False, "rate_limit": {"requests_per_second": 10, "orders_per_second": 5}}
     bybit = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
-    mexc  = MexcSpotAdapterReal(credentials=mexc_creds)
+    mexc  = MexcHybridAdapterReal(credentials=mexc_creds)
 
     ob_engine = OrderBookEngine(validate_checksum=False)
     bybit.on_orderbook(ob_engine.handle)
