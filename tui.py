@@ -42,7 +42,7 @@ FEE_BPS = 12.2
 # ── Virtual trading ───────────────────────────────────────────────────────
 _trades: list[dict] = []
 _positions: dict[tuple, dict] = {}
-_portfolio  = {"balance": 100.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
+_portfolio  = {"balance": 300.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
 _cooldown: dict[str, float] = {}   # symbol → monotonic time когда кулдаун истекает
 _trades_page = 0
 
