@@ -21,6 +21,8 @@ from rich.text import Text
 
 load_dotenv(Path(".env"))
 
+from run import _BLACKLIST  # noqa: E402
+
 # ── Shared state ──────────────────────────────────────────────────────────
 _spread_map: dict[tuple, dict] = {}
 _stats = {
@@ -220,7 +222,7 @@ async def main() -> None:
     from core.logging import setup_logging
     setup_logging(level="ERROR", json_output=False)
 
-    from run import fetch_futures_symbols, _BLACKLIST
+    from run import fetch_futures_symbols
     symbols = await fetch_futures_symbols(500)
     _stats["pairs"] = len(symbols)
 
