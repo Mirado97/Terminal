@@ -33,7 +33,7 @@ class MexcFuturesWsClient(BaseWsClient):
     Канал: sub.ticker → push.ticker (bid1/ask1)
     """
 
-    WS_URL = "wss://contract.mexc.com/ws"
+    WS_URL = "wss://contract.mexc.com/edge"
 
     def __init__(self) -> None:
         super().__init__(
