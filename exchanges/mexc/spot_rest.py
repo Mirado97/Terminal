@@ -101,7 +101,7 @@ class MexcSpotRestClient:
             qs.encode(),
             hashlib.sha256,
         ).hexdigest()
-        body = f"{qs}&signature={sig}"
+        body = f"{qs}&signature={sig}".encode()
         async with self._session.post(
             f"{BASE_URL}{path}",
             data=body,
