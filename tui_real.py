@@ -34,17 +34,16 @@ _spread_map: dict[tuple, dict] = {}
 _stats = {
     "pairs":           0,
     "bybit_connected": False,
-    "mexc_connected":  False,
+    "gate_connected":  False,
     "start_time":      time.time(),
-    "mx_balance":      -1.0,
     "bybit_usdt":      -1.0,
-    "mexc_usdt":       -1.0,
-    "bybit_usdt_start": -1.0,   # баланс при старте сессии (для R:)
-    "mexc_usdt_start":  -1.0,
+    "gate_usdt":       -1.0,
+    "bybit_usdt_start": -1.0,
+    "gate_usdt_start":  -1.0,
 }
 _paused: bool = False
 
-FEE_BPS = 10.0  # Bybit 9.0 taker + MEXC spot 1.0 taker (с MX токеном)
+FEE_BPS = 14.0  # Bybit 9.0 taker + Gate.io 5.0 taker
 
 # ── Реальные позиции и история ────────────────────────────────────────────
 _trades: list[dict] = []
@@ -141,9 +140,7 @@ def build_ui() -> Layout:
 
     # ── Header ──────────────────────────────────────────────────────────
     bybit_s = _conn(_stats["bybit_connected"])
-    mexc_s  = _conn(_stats["mexc_connected"])
-    mx      = _stats["mx_balance"]
-    mx_str  = f"[green]{mx:.1f}[/]" if mx >= 10 else (f"[red]{mx:.1f}[/]" if mx >= 0 else "[dim]?[/]")
+    gate_s  = _conn(_stats["gate_connected"])
 
     def _bal_str(v: float) -> str:
         return f"[yellow]${v:.0f}[/]" if v >= 0 else "[dim]?[/]"
@@ -154,8 +151,8 @@ def build_ui() -> Layout:
         diff = current - start
         return f" {_pnl_str(diff, 0)}"
 
-    by_r = _r_str(_stats["bybit_usdt"], _stats["bybit_usdt_start"])
-    mx_r = _r_str(_stats["mexc_usdt"],  _stats["mexc_usdt_start"])
+    by_r   = _r_str(_stats["bybit_usdt"], _stats["bybit_usdt_start"])
+    gate_r = _r_str(_stats["gate_usdt"],  _stats["gate_usdt_start"])
 
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
@@ -164,9 +161,8 @@ def build_ui() -> Layout:
     layout["header"].update(Panel(
         Text.from_markup(
             f"[bold cyan]◈ REAL TRADING[/]  Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
-            f"MEXC[dim]spot[/]: {mexc_s} {_bal_str(_stats['mexc_usdt'])}{mx_r}  │  "
+            f"Gate.io: {gate_s} {_bal_str(_stats['gate_usdt'])}{gate_r}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
-            f"MX: {mx_str}  "
             f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
             f"{pause_str}"
         ),
@@ -289,7 +285,7 @@ def build_ui() -> Layout:
 
     layout["spreads"].update(Panel(
         tbl,
-        title="[bold]Bybit Linear  ↔  MEXC Futures  │  x1 leverage[/]",
+        title="[bold]Bybit Linear  ↔  Gate.io Futures  │  x1 leverage[/]",
         subtitle=f"[dim]порог >{FEE_BPS} bps  │  топ 5 из {len(_spread_map)}[/]",
     ))
 
@@ -315,7 +311,7 @@ def _bybit_qty(sym: str, size_usdt: float, price: float) -> float:
 async def bot_main_real(symbols: list[str]) -> None:
     from core.models import Exchange, MarketType, OrderSide, OrderType
     from exchanges.bybit.adapter import BybitAdapter
-    from exchanges.mexc.hybrid_adapter_real import MexcHybridAdapterReal
+    from exchanges.gate.adapter_real import GateAdapterReal
     from orderbook.engine import OrderBookEngine
     from spread.calculator import SpreadCalculator
     from spread.fees import FeeSchedule, FeeTable
@@ -325,21 +321,21 @@ async def bot_main_real(symbols: list[str]) -> None:
         api_key    = os.environ.get("BYBIT_API_KEY", ""),
         api_secret = os.environ.get("BYBIT_API_SECRET", ""),
     )
-    mexc_creds = ExchangeCredentials(
-        api_key    = os.environ.get("MEXC_API_KEY", ""),
-        api_secret = os.environ.get("MEXC_API_SECRET", ""),
+    gate_creds = ExchangeCredentials(
+        api_key    = os.environ.get("GATE_API_KEY", ""),
+        api_secret = os.environ.get("GATE_API_SECRET", ""),
     )
 
     bybit_cfg = {"testnet": False, "rate_limit": {"requests_per_second": 10, "orders_per_second": 5}}
     bybit = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
-    mexc  = MexcHybridAdapterReal(credentials=mexc_creds)
+    gate  = GateAdapterReal(credentials=gate_creds)
 
     ob_engine = OrderBookEngine(validate_checksum=False)
     bybit.on_orderbook(ob_engine.handle)
-    mexc.on_orderbook(ob_engine.handle)
+    gate.on_orderbook(ob_engine.handle)
 
     fee_table = FeeTable(overrides={
-        (Exchange.MEXC,  MarketType.SPOT):      FeeSchedule(maker_bps=0.0,  taker_bps=1.0),  # с MX токеном
+        (Exchange.GATE,  MarketType.PERPETUAL): FeeSchedule(maker_bps=0.0, taker_bps=5.0),
         (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
@@ -352,9 +348,9 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.BUY, OrderType.MARKET, qty)
             return order.id, qty
-        else:  # mexc
-            order = await mexc.open_long(sym, VIRTUAL_SIZE_USDT, price)
-            return order.id, order.qty  # qty = vol (контракты)
+        else:  # gate
+            order = await gate.open_long(sym, VIRTUAL_SIZE_USDT, price)
+            return order.id, order.qty
 
     async def _do_open_short(exchange: str, sym: str, price: float) -> tuple:
         """Открыть шорт. Возвращает (order_id, qty_for_close)."""
@@ -363,8 +359,8 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.SELL, OrderType.MARKET, qty)
             return order.id, qty
-        else:  # mexc
-            order = await mexc.open_short(sym, VIRTUAL_SIZE_USDT, price)
+        else:  # gate
+            order = await gate.open_short(sym, VIRTUAL_SIZE_USDT, price)
             return order.id, order.qty
 
     async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> None:
@@ -373,7 +369,7 @@ async def bot_main_real(symbols: list[str]) -> None:
             await bybit.place_order(sym, MarketType.PERPETUAL,
                                     OrderSide.SELL, OrderType.MARKET, qty)
         else:
-            await mexc.close_long(sym, qty, price)
+            await gate.close_long(sym, qty, price)
 
     async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> None:
         """Закрыть шорт."""
@@ -381,17 +377,15 @@ async def bot_main_real(symbols: list[str]) -> None:
             await bybit.place_order(sym, MarketType.PERPETUAL,
                                     OrderSide.BUY, OrderType.MARKET, qty)
         else:
-            await mexc.close_short(sym, qty, price)
+            await gate.close_short(sym, qty, price)
 
     async def _on_book_update(updated) -> None:
         global _last_entry_at
         if not updated.is_synced or updated.is_stale:
             return
         sym      = updated.symbol
-        other_ex = Exchange.BYBIT if updated.exchange == Exchange.MEXC else Exchange.MEXC
-        # Bybit — PERPETUAL, MEXC — SPOT (разные рынки)
-        other_mt = MarketType.PERPETUAL if other_ex == Exchange.BYBIT else MarketType.SPOT
-        other    = ob_engine.get(other_ex, sym, other_mt)
+        other_ex = Exchange.BYBIT if updated.exchange == Exchange.GATE else Exchange.GATE
+        other    = ob_engine.get(other_ex, sym, MarketType.PERPETUAL)
         if other is None or not other.is_synced or other.is_stale:
             return
 
@@ -478,14 +472,12 @@ async def bot_main_real(symbols: list[str]) -> None:
 
             elif not _paused:
                 # ── Вход с 100мс задержкой ───────────────────────────────
-                # sell_b.exchange != MEXC: спот не даёт шортить без маржи
                 if (ep > ENTRY_THRESHOLD
                         and len(_positions) < MAX_POSITIONS
                         and sym not in _BLACKLIST
                         and _cooldown.get(sym, 0) < now_mono
                         and key not in _pending_entries
-                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S
-                        and sell_b.exchange != Exchange.MEXC):
+                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S):
 
                     spread_entry = _spread_map.get(key)
                     reaction_ms = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
@@ -579,10 +571,10 @@ async def bot_main_real(symbols: list[str]) -> None:
                 f.write(f"{time.strftime('%H:%M:%S')} Bybit instruments load error: {e}\n")
 
     async def _fetch_exchange_balances() -> None:
-        by_key = bybit_creds.api_key
-        by_sec = bybit_creds.api_secret
-        mx_key = mexc_creds.api_key
-        mx_sec = mexc_creds.api_secret
+        by_key   = bybit_creds.api_key
+        by_sec   = bybit_creds.api_secret
+        gate_key = gate_creds.api_key
+        gate_sec = gate_creds.api_secret
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
             if by_key and by_sec:
                 for acct in ("UNIFIED", "CONTRACT"):
@@ -608,49 +600,27 @@ async def bot_main_real(symbols: list[str]) -> None:
                             break
                     except Exception:
                         pass
-            if mx_key and mx_sec:
+            if gate_key and gate_sec:
                 try:
-                    ts     = str(int(time.time() * 1000))
-                    params = f"timestamp={ts}"
-                    sig    = hmac.new(mx_sec.encode(), params.encode(), hashlib.sha256).hexdigest()
+                    ts        = str(int(time.time()))
+                    path      = "/api/v4/futures/usdt/accounts"
+                    body_hash = hashlib.sha512(b"").hexdigest()
+                    msg       = f"GET\n{path}\n\n{body_hash}\n{ts}"
+                    sig       = hmac.new(gate_sec.encode(), msg.encode(), hashlib.sha512).hexdigest()
                     async with s.get(
-                        f"https://api.mexc.com/api/v3/account?{params}&signature={sig}",
-                        headers={"X-MEXC-APIKEY": mx_key},
+                        f"https://api.gateio.ws{path}",
+                        headers={"KEY": gate_key, "SIGN": sig, "Timestamp": ts, "Accept": "application/json"},
                     ) as r:
                         data = await r.json(content_type=None)
-                    for b in data.get("balances", []):
-                        if b.get("asset") == "USDT":
-                            val = float(b.get("free", 0)) + float(b.get("locked", 0))
-                            _stats["mexc_usdt"] = val
-                            if _stats["mexc_usdt_start"] < 0:
-                                _stats["mexc_usdt_start"] = val
-                            break
+                    val = float(data.get("available") or 0)
+                    _stats["gate_usdt"] = val
+                    if _stats["gate_usdt_start"] < 0:
+                        _stats["gate_usdt_start"] = val
                 except Exception:
                     pass
 
-    async def _fetch_mx_balance() -> None:
-        api_key    = mexc_creds.api_key
-        api_secret = mexc_creds.api_secret
-        if not api_key or not api_secret:
-            return
-        try:
-            ts     = str(int(time.time() * 1000))
-            params = f"timestamp={ts}"
-            sig    = hmac.new(api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
-            url    = f"https://api.mexc.com/api/v3/account?{params}&signature={sig}"
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
-                async with s.get(url, headers={"X-MEXC-APIKEY": api_key}) as r:
-                    data = await r.json(content_type=None)
-            for b in data.get("balances", []):
-                if b["asset"] == "MX":
-                    _stats["mx_balance"] = float(b.get("free", 0)) + float(b.get("locked", 0))
-                    return
-            _stats["mx_balance"] = 0.0
-        except Exception:
-            pass
-
     async def _stats_loop() -> None:
-        _mx_fetch_t   = [0.0]
+        _bal_fetch_t  = [0.0]
         _cfg_reload_t = [0.0]
         while True:
             await asyncio.sleep(1)
@@ -665,25 +635,24 @@ async def bot_main_real(symbols: list[str]) -> None:
                 del _spread_map[k]
 
             _stats["bybit_connected"] = bybit.health.ws_connected
-            _stats["mexc_connected"]  = mexc.health.ws_connected
+            _stats["gate_connected"]  = gate.health.ws_connected
 
             _portfolio["unrealized_pnl"] = round(sum(
                 VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - _spread_map[k]["executable_spread_bps"]) / 10_000
                 for k, pos in _positions.items() if k in _spread_map
             ), 2)
 
-            if now - _mx_fetch_t[0] > 60:
-                _mx_fetch_t[0] = now
-                asyncio.create_task(_fetch_mx_balance())
+            if now - _bal_fetch_t[0] > 60:
+                _bal_fetch_t[0] = now
                 asyncio.create_task(_fetch_exchange_balances())
 
     await _load_bybit_instruments()
     await bybit.connect()
-    await mexc.connect()
+    await gate.connect()
 
     for sym in symbols:
         await bybit.subscribe_orderbook(sym, MarketType.PERPETUAL)
-        await mexc.subscribe_orderbook(sym, MarketType.SPOT)
+        await gate.subscribe_orderbook(sym, MarketType.PERPETUAL)
 
     await _stats_loop()
 
