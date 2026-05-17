@@ -87,7 +87,7 @@ def build_ui() -> Layout:
     tbl.add_column("Обновлено",width=10)
 
     rows = sorted(
-        _spread_map.values(),
+        (v for v in _spread_map.values() if v["symbol"] not in _BLACKLIST),
         key=lambda x: x["executable_spread_bps"],
         reverse=True,
     )[:50]
@@ -220,7 +220,7 @@ async def main() -> None:
     from core.logging import setup_logging
     setup_logging(level="ERROR", json_output=False)
 
-    from run import fetch_futures_symbols
+    from run import fetch_futures_symbols, _BLACKLIST
     symbols = await fetch_futures_symbols(500)
     _stats["pairs"] = len(symbols)
 

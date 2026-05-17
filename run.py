@@ -31,6 +31,13 @@ from watchdog.orchestrator import WatchdogOrchestrator
 
 _spread_map: dict[tuple, dict] = {}
 
+# Пары со структурным спредом — никогда не выравниваются, не торговать
+_BLACKLIST = {
+    "XAUTUSDT",  # золото — разные контракты на биржах
+    "XAGUSDT",   # серебро
+    "BTCDOMUSDT",
+}
+
 _FALLBACK_SYMBOLS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","XRPUSDT","DOGEUSDT","BNBUSDT",
     "ADAUSDT","AVAXUSDT","LINKUSDT","DOTUSDT","UNIUSDT","LTCUSDT",
@@ -76,7 +83,8 @@ async def fetch_futures_symbols(n: int = 500) -> list[str]:
                 vol = float(c.get("volumeOf24h", 0) or 0)
                 mexc_symbols[sym] = vol
 
-        symbols = sorted(mexc_symbols, key=lambda s: mexc_symbols[s], reverse=True)[:n]
+        symbols = [s for s in sorted(mexc_symbols, key=lambda s: mexc_symbols[s], reverse=True)
+                   if s not in _BLACKLIST][:n]
         print(f"  Загружено {len(symbols)} фьюч. пар (Bybit Linear ∩ MEXC Futures)")
         return symbols
 
