@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import importlib
 import json
 import logging
 import os
@@ -55,8 +56,6 @@ _cooldown: dict[str, float] = {}       # symbol → monotonic time когда к
 _pending_entries: set[tuple] = set()   # ключи с задержанным входом (100мс)
 _trades_page = 0
 
-COOLDOWN_S = 1800   # 30 минут после тайм-аут закрытия
-
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -66,13 +65,37 @@ def _log_trade(trade: dict) -> None:
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(trade, ensure_ascii=False) + "\n")
 
-VIRTUAL_SIZE_USDT  = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
-ENTRY_THRESHOLD    = 15.0   # bps executable — порог входа
-EXIT_THRESHOLD     = -2.0   # bps executable — порог выхода (спред развернулся)
-DYNAMIC_EXIT_RATIO = 0.20   # выход когда осталось ≤20% от входного спреда (захвачено 80%)
-MAX_HOLD_S         = 60     # принудительный выход через 1 минуту
+VIRTUAL_SIZE_USDT  = 50.0
+ENTRY_THRESHOLD    = 15.0
+EXIT_THRESHOLD     = -2.0
+DYNAMIC_EXIT_RATIO = 0.20
+MAX_HOLD_S         = 60
 MAX_POSITIONS      = 3
+COOLDOWN_S         = 1800
 TRADES_PER_PAGE    = 10
+
+
+def _reload_config() -> None:
+    """Перечитывает config.py и обновляет глобальные параметры."""
+    global ENTRY_THRESHOLD, EXIT_THRESHOLD, MAX_HOLD_S, DYNAMIC_EXIT_RATIO
+    global MAX_POSITIONS, COOLDOWN_S, VIRTUAL_SIZE_USDT
+    try:
+        if "config" in sys.modules:
+            mod = importlib.reload(sys.modules["config"])
+        else:
+            import config as mod  # type: ignore
+        ENTRY_THRESHOLD    = float(getattr(mod, "ENTRY_THRESHOLD",    ENTRY_THRESHOLD))
+        EXIT_THRESHOLD     = float(getattr(mod, "EXIT_THRESHOLD",     EXIT_THRESHOLD))
+        MAX_HOLD_S         = int(getattr(mod,   "MAX_HOLD_S",         MAX_HOLD_S))
+        DYNAMIC_EXIT_RATIO = float(getattr(mod, "DYNAMIC_EXIT_RATIO", DYNAMIC_EXIT_RATIO))
+        MAX_POSITIONS      = int(getattr(mod,   "MAX_POSITIONS",      MAX_POSITIONS))
+        COOLDOWN_S         = int(getattr(mod,   "COOLDOWN_S",         COOLDOWN_S))
+        VIRTUAL_SIZE_USDT  = float(getattr(mod, "VIRTUAL_SIZE_USDT",  VIRTUAL_SIZE_USDT))
+    except Exception:
+        pass
+
+
+_reload_config()  # загрузка при старте
 
 
 def _hold_str(hold_ms: int) -> str:
@@ -510,10 +533,14 @@ async def bot_main(symbols: list[str]) -> None:
 
     # Лёгкий цикл: обновляет статистику и чистит устаревшие записи из карты
     async def _stats_loop() -> None:
-        _mx_fetch_t = [0.0]
+        _mx_fetch_t  = [0.0]
+        _cfg_reload_t = [0.0]
         while True:
             await asyncio.sleep(1)
             now = time.monotonic()
+            if now - _cfg_reload_t[0] > 5:
+                _cfg_reload_t[0] = now
+                _reload_config()
             stale_keys = [k for k, v in _spread_map.items() if now - v.get("_ts", 0) > 10]
             for k in stale_keys:
                 del _spread_map[k]
