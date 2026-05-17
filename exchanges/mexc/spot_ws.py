@@ -35,11 +35,12 @@ class MexcSpotWsClient(BaseWsClient):
             self._symbols.append(symbol)
 
     async def _on_connect(self, ws) -> None:
+        # MEXC spot: подписываем батчами по 10 с паузой
         params = [f"spot@public.bookTicker.v3.api@{sym}" for sym in self._symbols]
-        for i in range(0, len(params), 30):
-            msg = orjson.dumps({"method": "SUBSCRIPTION", "params": params[i:i + 30]})
+        for i in range(0, len(params), 10):
+            msg = orjson.dumps({"method": "SUBSCRIPTION", "params": params[i:i + 10]})
             await ws.send(msg.decode())
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
         logger.info("MEXC Spot WS подключён", subs=len(self._symbols))
 
     async def _send_ping(self, ws) -> None:
@@ -55,14 +56,14 @@ class MexcSpotWsClient(BaseWsClient):
         if "bookTicker" not in channel:
             return
 
-        data = msg.get("d", {})
-        symbol = data.get("s", "")
+        # symbol может быть в корне сообщения или внутри d
+        data   = msg.get("d", {})
+        symbol = msg.get("s", "") or data.get("s", "")
         if not symbol:
             return
 
-        ts_ms = msg.get("t", int(time.time() * 1000))
-        if ts_ms < 1e12:
-            ts_ms = int(ts_ms * 1000)
+        ts_raw = msg.get("t", int(time.time() * 1000))
+        ts_ms  = int(ts_raw * 1000) if ts_raw < 1e12 else int(ts_raw)
 
         try:
             bid = float(data.get("b", 0) or 0)
