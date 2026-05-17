@@ -439,37 +439,22 @@ async def bot_main(symbols: list[str]) -> None:
         api_secret = mexc_creds.api_secret
         if not api_key or not api_secret:
             return
-        total = 0.0
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
-            # 1) Спотовый аккаунт
-            try:
-                ts     = str(int(time.time() * 1000))
-                params = f"timestamp={ts}"
-                sig    = hmac.new(api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
-                url    = f"https://api.mexc.com/api/v3/account?{params}&signature={sig}"
+        try:
+            ts     = str(int(time.time() * 1000))
+            params = f"timestamp={ts}"
+            sig    = hmac.new(api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
+            url    = f"https://api.mexc.com/api/v3/account?{params}&signature={sig}"
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
                 async with s.get(url, headers={"X-MEXC-APIKEY": api_key}) as r:
                     data = await r.json(content_type=None)
-                for b in data.get("balances", []):
-                    if b["asset"] == "MX":
-                        total += float(b.get("free", 0)) + float(b.get("locked", 0))
-                        break
-            except Exception:
-                pass
-            # 2) Фьючерсный (contract) аккаунт
-            try:
-                ts       = str(int(time.time() * 1000))
-                sign_src = api_key + ts + ""
-                sig      = hmac.new(api_secret.encode(), sign_src.encode(), hashlib.sha256).hexdigest()
-                headers  = {"ApiKey": api_key, "Request-Time": ts, "Signature": sig}
-                async with s.get("https://contract.mexc.com/api/v1/private/account/assets", headers=headers) as r:
-                    data = await r.json(content_type=None)
-                for a in data.get("data", []):
-                    if a.get("currency", "").upper() == "MX":
-                        total += float(a.get("availableBalance", 0)) + float(a.get("frozenBalance", 0))
-                        break
-            except Exception:
-                pass
-        _stats["mx_balance"] = total
+            for b in data.get("balances", []):
+                if b["asset"] == "MX":
+                    _stats["mx_balance"] = float(b.get("free", 0)) + float(b.get("locked", 0))
+                    return
+            # MX не найден в списке — значит баланс 0
+            _stats["mx_balance"] = 0.0
+        except Exception:
+            pass
 
     # Лёгкий цикл: обновляет статистику и чистит устаревшие записи из карты
     async def _stats_loop() -> None:
