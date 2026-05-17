@@ -103,9 +103,12 @@ class BitgetFuturesRestClient:
     async def get_usdt_balance(self) -> float:
         data = await self._request(
             "GET",
-            "/api/v2/mix/account/account?productType=USDT-FUTURES&marginCoin=USDT",
+            "/api/v2/mix/account/accounts?productType=USDT-FUTURES",
         )
-        return float((data.get("data") or {}).get("available") or 0)
+        for acct in (data.get("data") or []):
+            if acct.get("marginCoin") == "USDT":
+                return float(acct.get("available") or 0)
+        return 0.0
 
     async def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         assert self._session
