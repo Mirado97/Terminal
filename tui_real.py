@@ -42,6 +42,7 @@ _stats = {
     "gate_usdt_start":  -1.0,
 }
 _paused: bool = False
+_auto_paused: bool = False  # авто-пауза из-за недостаточного баланса
 
 FEE_BPS = 14.0  # Bybit 9.0 taker + Gate.io 5.0 taker
 
@@ -156,7 +157,12 @@ def build_ui() -> Layout:
 
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
-    pause_str = "  [bold red]⏸ ПАУЗА[/]" if _paused else ""
+    if _auto_paused:
+        pause_str = "  [bold yellow]⏸ НЕТ БАЛАНСА[/]"
+    elif _paused:
+        pause_str = "  [bold red]⏸ ПАУЗА[/]"
+    else:
+        pause_str = ""
 
     layout["header"].update(Panel(
         Text.from_markup(
@@ -646,6 +652,19 @@ async def bot_main_real(symbols: list[str]) -> None:
                 _bal_fetch_t[0] = now
                 asyncio.create_task(_fetch_exchange_balances())
 
+            # Авто-пауза если баланс ещё не загружен или недостаточен
+            global _paused, _auto_paused
+            bybit_ok = _stats["bybit_usdt"] >= VIRTUAL_SIZE_USDT
+            gate_ok  = _stats["gate_usdt"]  >= VIRTUAL_SIZE_USDT
+            if not (bybit_ok and gate_ok):
+                if not _paused:
+                    _paused = True
+                    _auto_paused = True
+            else:
+                if _auto_paused:
+                    _paused = False
+                    _auto_paused = False
+
     await _load_bybit_instruments()
     await bybit.connect()
     await gate.connect()
@@ -697,6 +716,7 @@ async def _key_task() -> None:
                     elif ch3 == b"5":
                         _trades_page = (_trades_page - 1) % n_pages
             elif ch in (b"p", b"P"):
+                _auto_paused = False
                 _paused = not _paused
             elif ch in (b"q", b"Q", b"\x03"):
                 import os as _os
