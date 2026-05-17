@@ -53,6 +53,7 @@ _portfolio = {"realized_pnl": 0.0, "unrealized_pnl": 0.0}
 _cooldown: dict[str, float] = {}
 _pending_entries: set[tuple] = set()
 _trades_page = 0
+_bybit_qty_steps: dict[str, float] = {}  # symbol → qtyStep из instruments-info
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -298,11 +299,14 @@ def build_ui() -> Layout:
 
 # ── Real bot logic ────────────────────────────────────────────────────────
 
-def _bybit_qty(size_usdt: float, price: float) -> float:
-    """USDT → количество базовой валюты для Bybit linear."""
+def _bybit_qty(sym: str, size_usdt: float, price: float) -> float:
+    """USDT → количество базовой валюты для Bybit linear, с учётом qtyStep."""
     if price <= 0:
         return 0.0
-    return round(size_usdt / price, 6)
+    step = _bybit_qty_steps.get(sym, 1.0)  # default=1: целый контракт
+    raw  = size_usdt / price
+    qty  = round(round(raw / step) * step, 8)
+    return max(step, qty)  # минимум один шаг
 
 
 async def bot_main_real(symbols: list[str]) -> None:
@@ -341,7 +345,7 @@ async def bot_main_real(symbols: list[str]) -> None:
     async def _do_open_long(exchange: str, sym: str, price: float) -> tuple:
         """Открыть лонг. Возвращает (order_id, qty_for_close)."""
         if exchange == "bybit":
-            qty = _bybit_qty(VIRTUAL_SIZE_USDT, price)
+            qty = _bybit_qty(sym, VIRTUAL_SIZE_USDT, price)
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.BUY, OrderType.MARKET, qty)
             return order.id, qty
@@ -352,7 +356,7 @@ async def bot_main_real(symbols: list[str]) -> None:
     async def _do_open_short(exchange: str, sym: str, price: float) -> tuple:
         """Открыть шорт. Возвращает (order_id, qty_for_close)."""
         if exchange == "bybit":
-            qty = _bybit_qty(VIRTUAL_SIZE_USDT, price)
+            qty = _bybit_qty(sym, VIRTUAL_SIZE_USDT, price)
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.SELL, OrderType.MARKET, qty)
             return order.id, qty
@@ -539,6 +543,30 @@ async def bot_main_real(symbols: list[str]) -> None:
 
     ob_engine.on_update(_on_book_update)
 
+    async def _load_bybit_instruments() -> None:
+        """Загружает qtyStep для всех linear-perpetuals чтобы правильно округлять qty."""
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+                cursor = ""
+                while True:
+                    url = "https://api.bybit.com/v5/market/instruments-info?category=linear&limit=1000"
+                    if cursor:
+                        url += f"&cursor={cursor}"
+                    async with s.get(url) as r:
+                        data = await r.json(content_type=None)
+                    result = data.get("result", {})
+                    for item in result.get("list", []):
+                        sym  = item.get("symbol", "")
+                        step = float(item.get("lotSizeFilter", {}).get("qtyStep", 1) or 1)
+                        _bybit_qty_steps[sym] = step
+                    cursor = result.get("nextPageCursor", "")
+                    if not cursor:
+                        break
+        except Exception as e:
+            log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
+            with open(log_file, "a") as f:
+                f.write(f"{time.strftime('%H:%M:%S')} Bybit instruments load error: {e}\n")
+
     async def _fetch_exchange_balances() -> None:
         by_key = bybit_creds.api_key
         by_sec = bybit_creds.api_secret
@@ -635,6 +663,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                 asyncio.create_task(_fetch_mx_balance())
                 asyncio.create_task(_fetch_exchange_balances())
 
+    await _load_bybit_instruments()
     await bybit.connect()
     await mexc.connect()
 

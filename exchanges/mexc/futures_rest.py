@@ -193,8 +193,13 @@ class MexcFuturesRestClient:
             return await self._handle(r)
 
     async def _handle(self, resp: aiohttp.ClientResponse) -> dict:
-        raw  = await resp.read()
-        data: dict = orjson.loads(raw)
+        raw = await resp.read()
+        try:
+            data: dict = orjson.loads(raw)
+        except Exception as e:
+            raise RuntimeError(
+                f"MEXC не JSON: status={resp.status}, raw={raw[:400]!r}"
+            ) from e
         if not data.get("success", True):
             raise RuntimeError(f"MEXC Futures API: {data.get('message', data)}")
         return data
