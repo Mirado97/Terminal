@@ -328,34 +328,44 @@ async def bot_main(symbols: list[str]) -> None:
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
 
-    async def _scan() -> None:
-        while True:
-            await asyncio.sleep(2)
-            books = ob_engine.synced_books()
-            by_sym: dict[str, list] = {}
-            for b in books:
-                by_sym.setdefault(b.symbol, []).append(b)
+    # Событийный расчёт спреда — срабатывает мгновенно при каждом тикере
+    async def _on_book_update(updated) -> None:
+        if not updated.is_synced or updated.is_stale:
+            return
+        sym   = updated.symbol
+        mtype = updated.market_type
+        other_ex = Exchange.BYBIT if updated.exchange == Exchange.MEXC else Exchange.MEXC
+        other    = ob_engine.get(other_ex, sym, mtype)
+        if other is None or not other.is_synced or other.is_stale:
+            return
+        for buy_b, sell_b in [(updated, other), (other, updated)]:
+            if buy_b.best_bid <= 0 or sell_b.best_ask <= 0:
+                continue
+            res = calculator.compute(buy_b, sell_b, 1_000.0)
+            if res is None or res.size_usdt < 10 or res.raw_spread_bps > 500:
+                continue
+            key = (sym, buy_b.exchange.value, sell_b.exchange.value)
+            _spread_map[key] = {
+                "symbol":                sym,
+                "buy_exchange":          buy_b.exchange.value,
+                "sell_exchange":         sell_b.exchange.value,
+                "raw_spread_bps":        round(res.raw_spread_bps, 2),
+                "executable_spread_bps": round(res.executable_spread_bps, 2),
+                "fee_cost_bps":          FEE_BPS,
+                "created_at":            time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "_ts":                   time.monotonic(),
+            }
 
-            for sym, blist in by_sym.items():
-                if len(blist) < 2:
-                    continue
-                for bb in blist:
-                    for sb in blist:
-                        if bb is sb:
-                            continue
-                        res = calculator.compute(bb, sb, 1_000.0)
-                        if res is None or res.size_usdt < 10 or res.raw_spread_bps > 500:
-                            continue
-                        key = (sym, bb.exchange.value, sb.exchange.value)
-                        _spread_map[key] = {
-                            "symbol":                sym,
-                            "buy_exchange":          bb.exchange.value,
-                            "sell_exchange":         sb.exchange.value,
-                            "raw_spread_bps":        round(res.raw_spread_bps, 2),
-                            "executable_spread_bps": round(res.executable_spread_bps, 2),
-                            "fee_cost_bps":          FEE_BPS,
-                            "created_at":            time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        }
+    ob_engine.on_update(_on_book_update)
+
+    # Лёгкий цикл: обновляет статистику и чистит устаревшие записи из карты
+    async def _stats_loop() -> None:
+        while True:
+            await asyncio.sleep(1)
+            now = time.monotonic()
+            stale_keys = [k for k, v in _spread_map.items() if now - v.get("_ts", 0) > 10]
+            for k in stale_keys:
+                del _spread_map[k]
 
             profitable = [v for v in _spread_map.values() if v["executable_spread_bps"] > 0]
             _stats["profitable"]      = len(profitable)
@@ -375,7 +385,7 @@ async def bot_main(symbols: list[str]) -> None:
         await bybit.subscribe_orderbook(sym, MarketType.PERPETUAL)
         await mexc.subscribe_orderbook(sym, MarketType.PERPETUAL)
 
-    await _scan()
+    await _stats_loop()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────

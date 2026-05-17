@@ -5,7 +5,7 @@ import time
 
 from core.models import Exchange, MarketType, OrderBook, Price
 
-_STALE_THRESHOLD_S = 60.0
+_STALE_THRESHOLD_S = 5.0
 
 
 class LocalOrderBook:
