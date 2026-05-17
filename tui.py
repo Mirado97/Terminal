@@ -5,10 +5,10 @@ tui.py — Terminal UI для арбитражного бота.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -47,6 +47,15 @@ _cooldown: dict[str, float] = {}   # symbol → monotonic time когда кул
 _trades_page = 0
 
 COOLDOWN_S = 1800   # 30 минут после тайм-аут закрытия
+
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
+
+def _log_trade(trade: dict) -> None:
+    log_file = LOG_DIR / f"trades_{time.strftime('%Y-%m-%d')}.jsonl"
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(json.dumps(trade, ensure_ascii=False) + "\n")
 
 VIRTUAL_SIZE_USDT  = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
 ENTRY_THRESHOLD    = 5.0    # bps executable — порог входа
@@ -370,6 +379,7 @@ async def bot_main(symbols: list[str]) -> None:
                     })
                     if len(_trades) > 500:
                         _trades.pop(0)
+                    _log_trade(_trades[-1])
                     if close_reason == "тайм-аут":
                         _cooldown[sym] = now_mono + COOLDOWN_S
                     del _positions[key]
@@ -426,12 +436,12 @@ async def bot_main(symbols: list[str]) -> None:
     await _stats_loop()
 
 
-# ── Keyboard listener (Linux) ─────────────────────────────────────────────
+# ── Keyboard listener (asyncio, Linux) ───────────────────────────────────
 
-def _start_key_listener() -> None:
-    """Фоновый поток: стрелки ← → переключают страницы истории."""
+async def _key_task() -> None:
+    """Asyncio корутина: PgUp/PgDn переключают страницы истории."""
     try:
-        import select
+        import select as _select
         import signal
         import termios
         import tty
@@ -444,24 +454,27 @@ def _start_key_listener() -> None:
     try:
         tty.setcbreak(fd)
         while True:
+            await asyncio.sleep(0.05)
+            if not _select.select([sys.stdin], [], [], 0)[0]:
+                continue
             ch = sys.stdin.buffer.read(1)
             if ch == b"\x1b":
-                if not select.select([sys.stdin], [], [], 0.1)[0]:
+                await asyncio.sleep(0.01)
+                if not _select.select([sys.stdin], [], [], 0)[0]:
                     continue
                 ch2 = sys.stdin.buffer.read(1)
                 if ch2 != b"[":
                     continue
-                if not select.select([sys.stdin], [], [], 0.1)[0]:
+                if not _select.select([sys.stdin], [], [], 0)[0]:
                     continue
                 ch3 = sys.stdin.buffer.read(1)
-                # PageUp = ESC[5~  PageDown = ESC[6~
                 if ch3 in (b"5", b"6"):
-                    if select.select([sys.stdin], [], [], 0.05)[0]:
-                        sys.stdin.buffer.read(1)   # consume ~
+                    if _select.select([sys.stdin], [], [], 0)[0]:
+                        sys.stdin.buffer.read(1)  # consume ~
                     n_pages = max(1, (len(_trades) + TRADES_PER_PAGE - 1) // TRADES_PER_PAGE)
-                    if ch3 == b"6":    # PageDown — вперёд
+                    if ch3 == b"6":    # PageDown
                         _trades_page = (_trades_page + 1) % n_pages
-                    elif ch3 == b"5": # PageUp — назад
+                    elif ch3 == b"5": # PageUp
                         _trades_page = (_trades_page - 1) % n_pages
             elif ch in (b"q", b"Q", b"\x03"):
                 os.kill(os.getpid(), signal.SIGINT)
@@ -489,7 +502,7 @@ async def main() -> None:
 
     bot_task = asyncio.create_task(bot_main(symbols))
 
-    threading.Thread(target=_start_key_listener, daemon=True).start()
+    asyncio.create_task(_key_task())
 
     console = Console()
     with Live(
