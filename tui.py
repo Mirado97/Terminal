@@ -52,6 +52,16 @@ MAX_POSITIONS     = 3
 TRADES_PER_PAGE   = 10
 
 
+def _hold_str(hold_ms: int) -> str:
+    if hold_ms < 1000:
+        return f"{hold_ms}мс"
+    elif hold_ms < 60_000:
+        return f"{hold_ms / 1000:.1f}с"
+    else:
+        s = hold_ms // 1000
+        return f"{s // 60}м{s % 60:02d}с"
+
+
 # ── UI builder ────────────────────────────────────────────────────────────
 
 def _uptime() -> str:
@@ -157,7 +167,8 @@ def build_ui() -> Layout:
     hist_tbl.add_column("Выход bps", justify="right", width=10)
     hist_tbl.add_column("P&L bps",   justify="right", width=9)
     hist_tbl.add_column("P&L $",     justify="right", width=9)
-    hist_tbl.add_column("Держал",    width=8)
+    hist_tbl.add_column("Реакция",   justify="right", width=8)
+    hist_tbl.add_column("Держал",    justify="right", width=8)
     hist_tbl.add_column("Закрыт",    width=8)
 
     trades_rev = list(reversed(_trades))
@@ -166,12 +177,15 @@ def build_ui() -> Layout:
     page_slice = trades_rev[page * TRADES_PER_PAGE : (page + 1) * TRADES_PER_PAGE]
 
     for t in page_slice:
+        r_ms = t.get("reaction_ms", 0)
+        react_str = f"[dim]{_hold_str(r_ms)}[/]" if r_ms < 500 else f"[yellow]{_hold_str(r_ms)}[/]"
         hist_tbl.add_row(
             t["symbol"],
             f"+{t['entry_bps']:.2f}",
             f"{t['exit_bps']:+.2f}",
             _pnl_str(t["pnl_bps"], 2),
             _pnl_str(t["pnl_usdt"], 4),
+            react_str,
             t["hold"],
             t["time"],
         )
@@ -179,7 +193,7 @@ def build_ui() -> Layout:
     layout["history"].update(Panel(
         hist_tbl,
         title="[bold]История виртуальных сделок[/]",
-        subtitle=f"[dim]стр. {page + 1}/{n_pages}  ← → для переключения[/]",
+        subtitle=f"[dim]стр. {page + 1}/{n_pages}  PgUp / PgDn для переключения[/]",
     ))
 
     # ── Bybit Linear ↔ MEXC Futures (топ 5, полная ширина) ──────────────
@@ -290,6 +304,8 @@ async def bot_main(symbols: list[str]) -> None:
                 continue
             key = (sym, buy_b.exchange.value, sell_b.exchange.value)
             ep  = round(res.executable_spread_bps, 2)
+            now_mono = time.monotonic()
+            existing = _spread_map.get(key)
             _spread_map[key] = {
                 "symbol":                sym,
                 "buy_exchange":          buy_b.exchange.value,
@@ -300,7 +316,8 @@ async def bot_main(symbols: list[str]) -> None:
                 "buy_price":             buy_b.best_ask,
                 "sell_price":            sell_b.best_bid,
                 "created_at":            time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "_ts":                   time.monotonic(),
+                "_ts":                   now_mono,
+                "_first_seen_ts":        existing["_first_seen_ts"] if existing else now_mono,
             }
 
             # ── Виртуальная торговля: решение мгновенно на каждом тикере ──
@@ -314,15 +331,16 @@ async def bot_main(symbols: list[str]) -> None:
                     pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 4)
                     _portfolio["realized_pnl"] += pnl_usdt
                     _portfolio["balance"]      += pnl_usdt
-                    hold_s = int(time.time() - pos["opened_at"])
+                    hold_ms = int((now_mono - pos.get("opened_at_mono", now_mono)) * 1000)
                     _trades.append({
-                        "symbol":    sym,
-                        "entry_bps": round(entry_ep, 2),
-                        "exit_bps":  ep,
-                        "pnl_bps":   round(pnl_bps, 2),
-                        "pnl_usdt":  pnl_usdt,
-                        "hold":      f"{hold_s//60}м{hold_s%60:02d}с",
-                        "time":      time.strftime("%H:%M:%S"),
+                        "symbol":      sym,
+                        "entry_bps":   round(entry_ep, 2),
+                        "exit_bps":    ep,
+                        "pnl_bps":     round(pnl_bps, 2),
+                        "pnl_usdt":    pnl_usdt,
+                        "hold":        _hold_str(hold_ms),
+                        "reaction_ms": pos.get("reaction_ms", 0),
+                        "time":        time.strftime("%H:%M:%S"),
                     })
                     if len(_trades) > 500:
                         _trades.pop(0)
@@ -330,6 +348,8 @@ async def bot_main(symbols: list[str]) -> None:
             else:
                 # Проверяем вход
                 if ep > ENTRY_THRESHOLD and len(_positions) < MAX_POSITIONS and sym not in _BLACKLIST:
+                    spread_entry = _spread_map.get(key)
+                    reaction_ms  = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
                     _positions[key] = {
                         "symbol":               sym,
                         "buy_exchange":         buy_b.exchange.value,
@@ -338,6 +358,8 @@ async def bot_main(symbols: list[str]) -> None:
                         "entry_buy_price":      buy_b.best_ask,
                         "entry_sell_price":     sell_b.best_bid,
                         "opened_at":            time.time(),
+                        "opened_at_mono":       now_mono,
+                        "reaction_ms":          reaction_ms,
                     }
 
     ob_engine.on_update(_on_book_update)
@@ -396,15 +418,24 @@ def _start_key_listener() -> None:
         while True:
             ch = sys.stdin.buffer.read(1)
             if ch == b"\x1b":
-                # escape-sequence: стрелка = ESC [ C/D
-                if select.select([sys.stdin], [], [], 0.05)[0]:
-                    seq = sys.stdin.buffer.read(2)
+                if not select.select([sys.stdin], [], [], 0.1)[0]:
+                    continue
+                ch2 = sys.stdin.buffer.read(1)
+                if ch2 != b"[":
+                    continue
+                if not select.select([sys.stdin], [], [], 0.1)[0]:
+                    continue
+                ch3 = sys.stdin.buffer.read(1)
+                # PageUp = ESC[5~  PageDown = ESC[6~
+                if ch3 in (b"5", b"6"):
+                    if select.select([sys.stdin], [], [], 0.05)[0]:
+                        sys.stdin.buffer.read(1)   # consume ~
                     n_pages = max(1, (len(_trades) + TRADES_PER_PAGE - 1) // TRADES_PER_PAGE)
-                    if seq in (b"[C", b"OC"):   # → вправо
+                    if ch3 == b"6":    # PageDown — вперёд
                         _trades_page = (_trades_page + 1) % n_pages
-                    elif seq in (b"[D", b"OD"): # ← влево
+                    elif ch3 == b"5": # PageUp — назад
                         _trades_page = (_trades_page - 1) % n_pages
-            elif ch in (b"q", b"Q", b"\x03"):   # q / Ctrl+C
+            elif ch in (b"q", b"Q", b"\x03"):
                 os.kill(os.getpid(), signal.SIGINT)
                 break
     except Exception:
