@@ -59,7 +59,7 @@ def _log_trade(trade: dict) -> None:
         f.write(json.dumps(trade, ensure_ascii=False) + "\n")
 
 VIRTUAL_SIZE_USDT  = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
-ENTRY_THRESHOLD    = 5.0    # bps executable — порог входа
+ENTRY_THRESHOLD    = 15.0   # bps executable — порог входа
 EXIT_THRESHOLD     = -2.0   # bps executable — порог выхода (спред развернулся)
 DYNAMIC_EXIT_RATIO = 0.20   # выход когда осталось ≤20% от входного спреда (захвачено 80%)
 MAX_HOLD_S         = 60     # принудительный выход через 1 минуту
