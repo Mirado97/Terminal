@@ -618,8 +618,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                         hmac.new(bg_sec.encode(), msg.encode(), hashlib.sha256).digest()
                     ).decode()
                     async with s.get(
-                        f"https://api.bitget.com{bg_path.split('?')[0]}",
-                        params={"productType": "USDT-FUTURES", "marginCoin": "USDT"},
+                        f"https://api.bitget.com{bg_path}",
                         headers={
                             "ACCESS-KEY":        bg_key,
                             "ACCESS-SIGN":       sig,

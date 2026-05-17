@@ -35,11 +35,10 @@ async def main() -> None:
         "Content-Type":      "application/json",
         "locale":            "en-US",
     }
-    url    = f"https://api.bitget.com{path.split('?')[0]}"
-    params = {"productType": "USDT-FUTURES", "marginCoin": "USDT"}
+    url = f"https://api.bitget.com{path}"  # query string уже в URL — не передаём params=
 
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-        async with s.get(url, params=params, headers=headers) as r:
+        async with s.get(url, headers=headers) as r:
             text = await r.text()
             print(f"\nHTTP status: {r.status}")
             print(f"Response:    {text}")
