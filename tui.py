@@ -45,11 +45,13 @@ _positions: dict[tuple, dict] = {}
 _portfolio = {"balance": 100.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
 _trades_page = 0
 
-VIRTUAL_SIZE_USDT = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
-ENTRY_THRESHOLD   = 5.0    # bps executable — порог входа
-EXIT_THRESHOLD    = -2.0   # bps executable — порог выхода
-MAX_POSITIONS     = 3
-TRADES_PER_PAGE   = 10
+VIRTUAL_SIZE_USDT  = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
+ENTRY_THRESHOLD    = 5.0    # bps executable — порог входа
+EXIT_THRESHOLD     = -2.0   # bps executable — порог выхода (спред развернулся)
+DYNAMIC_EXIT_RATIO = 0.20   # выход когда осталось ≤20% от входного спреда (захвачено 80%)
+MAX_HOLD_S         = 600    # принудительный выход через 10 минут
+MAX_POSITIONS      = 3
+TRADES_PER_PAGE    = 10
 
 
 def _hold_str(hold_ms: int) -> str:
@@ -167,6 +169,7 @@ def build_ui() -> Layout:
     hist_tbl.add_column("Выход bps", justify="right", width=10)
     hist_tbl.add_column("P&L bps",   justify="right", width=9)
     hist_tbl.add_column("P&L $",     justify="right", width=9)
+    hist_tbl.add_column("Причина",   width=10)
     hist_tbl.add_column("Реакция",   justify="right", width=8)
     hist_tbl.add_column("Держал",    justify="right", width=8)
     hist_tbl.add_column("Закрыт",    width=8)
@@ -179,12 +182,22 @@ def build_ui() -> Layout:
     for t in page_slice:
         r_ms = t.get("reaction_ms", 0)
         react_str = f"[dim]{_hold_str(r_ms)}[/]" if r_ms < 500 else f"[yellow]{_hold_str(r_ms)}[/]"
+        reason = t.get("close_reason", "")
+        if reason == "разворот":
+            reason_str = "[cyan]разворот[/]"
+        elif reason == "захват80%":
+            reason_str = "[green]захват80%[/]"
+        elif reason == "тайм-аут":
+            reason_str = "[yellow]тайм-аут[/]"
+        else:
+            reason_str = f"[dim]{reason}[/]"
         hist_tbl.add_row(
             t["symbol"],
             f"+{t['entry_bps']:.2f}",
             f"{t['exit_bps']:+.2f}",
             _pnl_str(t["pnl_bps"], 2),
             _pnl_str(t["pnl_usdt"], 4),
+            reason_str,
             react_str,
             t["hold"],
             t["time"],
@@ -324,23 +337,33 @@ async def bot_main(symbols: list[str]) -> None:
             pos = _positions.get(key)
 
             if pos is not None:
-                # Проверяем выход
+                # Проверяем выход — три условия
+                entry_ep  = pos["entry_executable_bps"]
+                hold_mono = now_mono - pos.get("opened_at_mono", now_mono)
+                close_reason = None
                 if ep < EXIT_THRESHOLD:
-                    entry_ep = pos["entry_executable_bps"]
+                    close_reason = "разворот"
+                elif ep < entry_ep * DYNAMIC_EXIT_RATIO:
+                    close_reason = "захват80%"
+                elif hold_mono > MAX_HOLD_S:
+                    close_reason = "тайм-аут"
+
+                if close_reason:
                     pnl_bps  = entry_ep - ep
                     pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 4)
                     _portfolio["realized_pnl"] += pnl_usdt
                     _portfolio["balance"]      += pnl_usdt
-                    hold_ms = int((now_mono - pos.get("opened_at_mono", now_mono)) * 1000)
+                    hold_ms = int(hold_mono * 1000)
                     _trades.append({
-                        "symbol":      sym,
-                        "entry_bps":   round(entry_ep, 2),
-                        "exit_bps":    ep,
-                        "pnl_bps":     round(pnl_bps, 2),
-                        "pnl_usdt":    pnl_usdt,
-                        "hold":        _hold_str(hold_ms),
-                        "reaction_ms": pos.get("reaction_ms", 0),
-                        "time":        time.strftime("%H:%M:%S"),
+                        "symbol":       sym,
+                        "entry_bps":    round(entry_ep, 2),
+                        "exit_bps":     ep,
+                        "pnl_bps":      round(pnl_bps, 2),
+                        "pnl_usdt":     pnl_usdt,
+                        "hold":         _hold_str(hold_ms),
+                        "reaction_ms":  pos.get("reaction_ms", 0),
+                        "close_reason": close_reason,
+                        "time":         time.strftime("%H:%M:%S"),
                     })
                     if len(_trades) > 500:
                         _trades.pop(0)
