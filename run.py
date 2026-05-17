@@ -44,7 +44,7 @@ _FALLBACK_SYMBOLS = [
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 
-async def fetch_futures_symbols(n: int = 100) -> list[str]:
+async def fetch_futures_symbols(n: int = 500) -> list[str]:
     """Топ N USDT-пар по объёму, доступных на Bybit Linear И MEXC Futures."""
     headers = {"User-Agent": _UA}
     try:
@@ -101,7 +101,7 @@ async def run() -> None:
         api_secret = os.environ.get("MEXC_API_SECRET", ""),
     )
 
-    symbols = await fetch_futures_symbols(100)
+    symbols = await fetch_futures_symbols(500)
 
     # ── Exchange адаптеры ─────────────────────────────────────────
     bybit_cfg = {"testnet": False, "rate_limit": {"requests_per_second": 10, "orders_per_second": 5}}
