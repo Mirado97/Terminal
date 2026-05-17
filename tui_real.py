@@ -44,7 +44,7 @@ _stats = {
 }
 _paused: bool = False
 
-FEE_BPS = 12.2
+FEE_BPS = 10.0  # Bybit 9.0 taker + MEXC spot 1.0 taker (с MX токеном)
 
 # ── Реальные позиции и история ────────────────────────────────────────────
 _trades: list[dict] = []
@@ -55,7 +55,6 @@ _pending_entries: set[tuple] = set()
 _trades_page = 0
 _bybit_qty_steps: dict[str, float] = {}  # symbol → qtyStep из instruments-info
 _last_entry_at: float = 0.0              # monotonic time последнего входа
-_mexc_fail_count: int = 0               # счётчик подряд идущих ошибок MEXC
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -161,16 +160,15 @@ def build_ui() -> Layout:
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
     pause_str = "  [bold red]⏸ ПАУЗА[/]" if _paused else ""
-    mexc_cb   = "  [bold red]⚠ MEXC BLOCKED[/]" if _mexc_fail_count >= 3 else ""
 
     layout["header"].update(Panel(
         Text.from_markup(
             f"[bold cyan]◈ REAL TRADING[/]  Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
-            f"MEXC: {mexc_s} {_bal_str(_stats['mexc_usdt'])}{mx_r}  │  "
+            f"MEXC[dim]spot[/]: {mexc_s} {_bal_str(_stats['mexc_usdt'])}{mx_r}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
             f"MX: {mx_str}  "
             f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
-            f"{pause_str}{mexc_cb}"
+            f"{pause_str}"
         ),
         style="on grey7",
     ))
@@ -317,7 +315,7 @@ def _bybit_qty(sym: str, size_usdt: float, price: float) -> float:
 async def bot_main_real(symbols: list[str]) -> None:
     from core.models import Exchange, MarketType, OrderSide, OrderType
     from exchanges.bybit.adapter import BybitAdapter
-    from exchanges.mexc.futures_adapter_real import MexcFuturesAdapterReal
+    from exchanges.mexc.spot_adapter_real import MexcSpotAdapterReal
     from orderbook.engine import OrderBookEngine
     from spread.calculator import SpreadCalculator
     from spread.fees import FeeSchedule, FeeTable
@@ -334,14 +332,14 @@ async def bot_main_real(symbols: list[str]) -> None:
 
     bybit_cfg = {"testnet": False, "rate_limit": {"requests_per_second": 10, "orders_per_second": 5}}
     bybit = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
-    mexc  = MexcFuturesAdapterReal(credentials=mexc_creds)
+    mexc  = MexcSpotAdapterReal(credentials=mexc_creds)
 
     ob_engine = OrderBookEngine(validate_checksum=False)
     bybit.on_orderbook(ob_engine.handle)
     mexc.on_orderbook(ob_engine.handle)
 
     fee_table = FeeTable(overrides={
-        (Exchange.MEXC,  MarketType.PERPETUAL): FeeSchedule(maker_bps=0.8,  taker_bps=3.2),
+        (Exchange.MEXC,  MarketType.SPOT):      FeeSchedule(maker_bps=0.0,  taker_bps=1.0),  # с MX токеном
         (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
@@ -386,13 +384,14 @@ async def bot_main_real(symbols: list[str]) -> None:
             await mexc.close_short(sym, qty, price)
 
     async def _on_book_update(updated) -> None:
-        global _last_entry_at, _mexc_fail_count
+        global _last_entry_at
         if not updated.is_synced or updated.is_stale:
             return
-        sym   = updated.symbol
-        mtype = updated.market_type
+        sym      = updated.symbol
         other_ex = Exchange.BYBIT if updated.exchange == Exchange.MEXC else Exchange.MEXC
-        other    = ob_engine.get(other_ex, sym, mtype)
+        # Bybit — PERPETUAL, MEXC — SPOT (разные рынки)
+        other_mt = MarketType.PERPETUAL if other_ex == Exchange.BYBIT else MarketType.SPOT
+        other    = ob_engine.get(other_ex, sym, other_mt)
         if other is None or not other.is_synced or other.is_stale:
             return
 
@@ -477,14 +476,16 @@ async def bot_main_real(symbols: list[str]) -> None:
                     if close_reason == "тайм-аут":
                         _cooldown[sym] = now_mono + COOLDOWN_S
 
-            elif not _paused and _mexc_fail_count < 3:
+            elif not _paused:
                 # ── Вход с 100мс задержкой ───────────────────────────────
+                # sell_b.exchange != MEXC: спот не даёт шортить без маржи
                 if (ep > ENTRY_THRESHOLD
                         and len(_positions) < MAX_POSITIONS
                         and sym not in _BLACKLIST
                         and _cooldown.get(sym, 0) < now_mono
                         and key not in _pending_entries
-                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S):
+                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S
+                        and sell_b.exchange != Exchange.MEXC):
 
                     spread_entry = _spread_map.get(key)
                     reaction_ms = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
@@ -512,7 +513,6 @@ async def bot_main_real(symbols: list[str]) -> None:
                         try:
                             buy_id, buy_qty = await _do_open_long(_buy_ex, _sym, buy_price)
                         except Exception as e:
-                            _mexc_fail_count += 1
                             _cooldown[_sym] = time.monotonic() + 60
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                             with open(log_file, "a") as f:
@@ -523,7 +523,6 @@ async def bot_main_real(symbols: list[str]) -> None:
                         try:
                             sell_id, sell_qty = await _do_open_short(_sell_ex, _sym, sell_price)
                         except Exception as e:
-                            _mexc_fail_count += 1
                             _cooldown[_sym] = time.monotonic() + 60
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                             with open(log_file, "a") as f:
@@ -535,7 +534,6 @@ async def bot_main_real(symbols: list[str]) -> None:
                                 pass
                             return
 
-                        _mexc_fail_count = 0  # оба ордера открылись — MEXC здоров
                         _positions[_key] = {
                             "symbol":               _sym,
                             "buy_exchange":         _buy_ex,
@@ -612,14 +610,17 @@ async def bot_main_real(symbols: list[str]) -> None:
                         pass
             if mx_key and mx_sec:
                 try:
-                    ts  = str(int(time.time() * 1000))
-                    sig = hmac.new(mx_sec.encode(), (mx_key + ts).encode(), hashlib.sha256).hexdigest()
-                    hdrs = {"ApiKey": mx_key, "Request-Time": ts, "Signature": sig}
-                    async with s.get("https://contract.mexc.com/api/v1/private/account/assets", headers=hdrs) as r:
+                    ts     = str(int(time.time() * 1000))
+                    params = f"timestamp={ts}"
+                    sig    = hmac.new(mx_sec.encode(), params.encode(), hashlib.sha256).hexdigest()
+                    async with s.get(
+                        f"https://api.mexc.com/api/v3/account?{params}&signature={sig}",
+                        headers={"X-MEXC-APIKEY": mx_key},
+                    ) as r:
                         data = await r.json(content_type=None)
-                    for a in data.get("data", []):
-                        if a.get("currency", "").upper() == "USDT":
-                            val = float(a.get("availableBalance", 0)) + float(a.get("frozenBalance", 0))
+                    for b in data.get("balances", []):
+                        if b.get("asset") == "USDT":
+                            val = float(b.get("free", 0)) + float(b.get("locked", 0))
                             _stats["mexc_usdt"] = val
                             if _stats["mexc_usdt_start"] < 0:
                                 _stats["mexc_usdt_start"] = val
@@ -682,7 +683,7 @@ async def bot_main_real(symbols: list[str]) -> None:
 
     for sym in symbols:
         await bybit.subscribe_orderbook(sym, MarketType.PERPETUAL)
-        await mexc.subscribe_orderbook(sym, MarketType.PERPETUAL)
+        await mexc.subscribe_orderbook(sym, MarketType.SPOT)
 
     await _stats_loop()
 
