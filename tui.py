@@ -40,6 +40,8 @@ _stats = {
     "mexc_connected":  False,
     "start_time":      time.time(),
     "mx_balance":      -1.0,   # MX токен MEXC (для оплаты комиссий)
+    "bybit_usdt":      -1.0,   # реальный баланс USDT на Bybit futures
+    "mexc_usdt":       -1.0,   # реальный баланс USDT на MEXC futures
 }
 _paused: bool = False
 
@@ -120,15 +122,21 @@ def build_ui() -> Layout:
     upnl = _portfolio["unrealized_pnl"]
     bal  = _portfolio["balance"]
     mx   = _stats["mx_balance"]
-    mx_str = f"[green]{mx:.1f}[/]" if mx >= 10 else (f"[red]{mx:.1f}[/]" if mx >= 0 else "[dim]N/A[/]")
-    pause_str = "  [bold red blink]⏸ ПАУЗА[/]" if _paused else ""
+    mx_str = f"[green]{mx:.1f}[/]" if mx >= 10 else (f"[red]{mx:.1f}[/]" if mx >= 0 else "[dim]?[/]")
+
+    def _bal_str(v: float) -> str:
+        return f"[yellow]${v:.0f}[/]" if v >= 0 else "[dim]?[/]"
+
+    pause_str = "  [bold red]⏸ ПАУЗА[/]" if _paused else ""
 
     layout["header"].update(Panel(
         Text.from_markup(
-            f"[bold cyan]◈ ARBITRAGE TERMINAL[/]  Bybit: {bybit_s}  MEXC: {mexc_s}  │  "
-            f"Пар: [yellow]{_stats['pairs']}[/]  Прибыльных: [green]{_stats['profitable']}[/]  "
-            f"Лучший: {best}  Up: [dim]{_uptime()}[/]  │  "
-            f"MX: {mx_str}  Виртуал: [yellow]${bal:.2f}[/]  R:{_pnl_str(rpnl, 4)}  U:{_pnl_str(upnl, 4)}"
+            f"[bold cyan]◈ ARBITRAGE TERMINAL[/]  "
+            f"Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}  "
+            f"MEXC: {mexc_s} {_bal_str(_stats['mexc_usdt'])}  │  "
+            f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
+            f"MX: {mx_str}  "
+            f"Виртуал: [yellow]${bal:.2f}[/]  R:{_pnl_str(rpnl, 4)}  U:{_pnl_str(upnl, 4)}"
             f"{pause_str}"
         ),
         style="on grey7",
@@ -434,6 +442,50 @@ async def bot_main(symbols: list[str]) -> None:
 
     ob_engine.on_update(_on_book_update)
 
+    async def _fetch_exchange_balances() -> None:
+        by_key = bybit_creds.api_key
+        by_sec = bybit_creds.api_secret
+        mx_key = mexc_creds.api_key
+        mx_sec = mexc_creds.api_secret
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+            # Bybit USDT (пробуем UNIFIED, потом CONTRACT)
+            if by_key and by_sec:
+                for acct in ("UNIFIED", "CONTRACT"):
+                    try:
+                        ts = str(int(time.time() * 1000))
+                        rw = "5000"
+                        qs = f"accountType={acct}&coin=USDT"
+                        sig = hmac.new(by_sec.encode(), (ts + by_key + rw + qs).encode(), hashlib.sha256).hexdigest()
+                        hdrs = {"X-BAPI-API-KEY": by_key, "X-BAPI-TIMESTAMP": ts,
+                                "X-BAPI-SIGN": sig, "X-BAPI-RECV-WINDOW": rw}
+                        async with s.get(f"https://api.bybit.com/v5/account/wallet-balance?{qs}", headers=hdrs) as r:
+                            data = await r.json(content_type=None)
+                        for acc in data.get("result", {}).get("list", []):
+                            for coin in acc.get("coin", []):
+                                if coin.get("coin") == "USDT":
+                                    val = float(coin.get("walletBalance", 0) or 0)
+                                    if val >= 0:
+                                        _stats["bybit_usdt"] = val
+                                        break
+                        if _stats["bybit_usdt"] >= 0:
+                            break
+                    except Exception:
+                        pass
+            # MEXC Futures USDT
+            if mx_key and mx_sec:
+                try:
+                    ts  = str(int(time.time() * 1000))
+                    sig = hmac.new(mx_sec.encode(), (mx_key + ts).encode(), hashlib.sha256).hexdigest()
+                    hdrs = {"ApiKey": mx_key, "Request-Time": ts, "Signature": sig}
+                    async with s.get("https://contract.mexc.com/api/v1/private/account/assets", headers=hdrs) as r:
+                        data = await r.json(content_type=None)
+                    for a in data.get("data", []):
+                        if a.get("currency", "").upper() == "USDT":
+                            _stats["mexc_usdt"] = float(a.get("availableBalance", 0)) + float(a.get("frozenBalance", 0))
+                            break
+                except Exception:
+                    pass
+
     async def _fetch_mx_balance() -> None:
         api_key    = mexc_creds.api_key
         api_secret = mexc_creds.api_secret
@@ -481,10 +533,11 @@ async def bot_main(symbols: list[str]) -> None:
                 for k, pos in _positions.items() if k in _spread_map
             ), 4)
 
-            # MX баланс раз в 60 секунд
+            # MX + реальные балансы раз в 60 секунд
             if now - _mx_fetch_t[0] > 60:
                 _mx_fetch_t[0] = now
                 asyncio.create_task(_fetch_mx_balance())
+                asyncio.create_task(_fetch_exchange_balances())
 
     await bybit.connect()
     await mexc.connect()
