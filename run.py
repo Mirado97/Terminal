@@ -55,7 +55,7 @@ _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0
 
 
 async def fetch_futures_symbols(n: int = 500) -> list[str]:
-    """Топ N USDT-пар по объёму, доступных на Bybit Linear И Gate.io Futures."""
+    """Топ N USDT-пар по объёму, доступных на Bybit Linear И Bitget Futures."""
     headers = {"User-Agent": _UA}
     try:
         async with aiohttp.ClientSession(
@@ -74,22 +74,23 @@ async def fetch_futures_symbols(n: int = 500) -> list[str]:
                 if sym.endswith("USDT"):
                     bybit_tickers[sym] = float(t.get("turnover24h", 0) or 0)
 
-            # Gate.io Futures USDT
-            async with session.get("https://api.gateio.ws/api/v4/futures/usdt/contracts") as r:
-                gate_data = await r.json(content_type=None)
+            # Bitget Futures USDT
+            async with session.get(
+                "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
+            ) as r:
+                bitget_data = await r.json(content_type=None)
 
-        gate_symbols: set[str] = set()
-        for c in gate_data:
-            name = c.get("name", "")          # BTC_USDT
-            sym  = name.replace("_", "")      # BTCUSDT
+        bitget_symbols: set[str] = set()
+        for c in bitget_data.get("data", []):
+            sym = c.get("symbol", "")
             if sym.endswith("USDT"):
-                gate_symbols.add(sym)
+                bitget_symbols.add(sym)
 
         # Пересечение, сортировка по объёму Bybit
-        common = {s: v for s, v in bybit_tickers.items() if s in gate_symbols}
+        common = {s: v for s, v in bybit_tickers.items() if s in bitget_symbols}
         symbols = [s for s in sorted(common, key=lambda s: common[s], reverse=True)
                    if s not in _BLACKLIST][:n]
-        print(f"  Загружено {len(symbols)} фьюч. пар (Bybit Linear ∩ Gate.io Futures)")
+        print(f"  Загружено {len(symbols)} фьюч. пар (Bybit Linear ∩ Bitget Futures)")
         return symbols
 
     except Exception as exc:

@@ -5,6 +5,7 @@ tui_real.py — Arbitrage Terminal с реальным исполнением о
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import importlib
@@ -32,19 +33,19 @@ from run import _BLACKLIST  # noqa: E402
 # ── Shared state ──────────────────────────────────────────────────────────
 _spread_map: dict[tuple, dict] = {}
 _stats = {
-    "pairs":           0,
-    "bybit_connected": False,
-    "gate_connected":  False,
-    "start_time":      time.time(),
-    "bybit_usdt":      -1.0,
-    "gate_usdt":       -1.0,
-    "bybit_usdt_start": -1.0,
-    "gate_usdt_start":  -1.0,
+    "pairs":             0,
+    "bybit_connected":   False,
+    "bitget_connected":  False,
+    "start_time":        time.time(),
+    "bybit_usdt":        -1.0,
+    "bitget_usdt":       -1.0,
+    "bybit_usdt_start":  -1.0,
+    "bitget_usdt_start": -1.0,
 }
 _paused: bool = False
 _auto_paused: bool = False  # авто-пауза из-за недостаточного баланса
 
-FEE_BPS = 14.0  # Bybit 9.0 taker + Gate.io 5.0 taker
+FEE_BPS = 15.0  # Bybit 9.0 taker + Bitget 6.0 taker
 
 # ── Реальные позиции и история ────────────────────────────────────────────
 _trades: list[dict] = []
@@ -140,8 +141,8 @@ def build_ui() -> Layout:
     )
 
     # ── Header ──────────────────────────────────────────────────────────
-    bybit_s = _conn(_stats["bybit_connected"])
-    gate_s  = _conn(_stats["gate_connected"])
+    bybit_s  = _conn(_stats["bybit_connected"])
+    bitget_s = _conn(_stats["bitget_connected"])
 
     def _bal_str(v: float) -> str:
         return f"[yellow]${v:.0f}[/]" if v >= 0 else "[dim]?[/]"
@@ -152,8 +153,8 @@ def build_ui() -> Layout:
         diff = current - start
         return f" {_pnl_str(diff, 0)}"
 
-    by_r   = _r_str(_stats["bybit_usdt"], _stats["bybit_usdt_start"])
-    gate_r = _r_str(_stats["gate_usdt"],  _stats["gate_usdt_start"])
+    by_r     = _r_str(_stats["bybit_usdt"],  _stats["bybit_usdt_start"])
+    bitget_r = _r_str(_stats["bitget_usdt"], _stats["bitget_usdt_start"])
 
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
@@ -167,7 +168,7 @@ def build_ui() -> Layout:
     layout["header"].update(Panel(
         Text.from_markup(
             f"[bold cyan]◈ REAL TRADING[/]  Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
-            f"Gate.io: {gate_s} {_bal_str(_stats['gate_usdt'])}{gate_r}  │  "
+            f"Bitget: {bitget_s} {_bal_str(_stats['bitget_usdt'])}{bitget_r}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
             f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
             f"{pause_str}"
@@ -291,7 +292,7 @@ def build_ui() -> Layout:
 
     layout["spreads"].update(Panel(
         tbl,
-        title="[bold]Bybit Linear  ↔  Gate.io Futures  │  x1 leverage[/]",
+        title="[bold]Bybit Linear  ↔  Bitget Futures  │  x1 leverage[/]",
         subtitle=f"[dim]порог >{FEE_BPS} bps  │  топ 5 из {len(_spread_map)}[/]",
     ))
 
@@ -317,7 +318,7 @@ def _bybit_qty(sym: str, size_usdt: float, price: float) -> float:
 async def bot_main_real(symbols: list[str]) -> None:
     from core.models import Exchange, MarketType, OrderSide, OrderType
     from exchanges.bybit.adapter import BybitAdapter
-    from exchanges.gate.adapter_real import GateAdapterReal
+    from exchanges.bitget.adapter_real import BitgetAdapterReal
     from orderbook.engine import OrderBookEngine
     from spread.calculator import SpreadCalculator
     from spread.fees import FeeSchedule, FeeTable
@@ -327,22 +328,23 @@ async def bot_main_real(symbols: list[str]) -> None:
         api_key    = os.environ.get("BYBIT_API_KEY", ""),
         api_secret = os.environ.get("BYBIT_API_SECRET", ""),
     )
-    gate_creds = ExchangeCredentials(
-        api_key    = os.environ.get("GATE_API_KEY", ""),
-        api_secret = os.environ.get("GATE_API_SECRET", ""),
+    bitget_creds = ExchangeCredentials(
+        api_key    = os.environ.get("BITGET_API_KEY", ""),
+        api_secret = os.environ.get("BITGET_API_SECRET", ""),
     )
+    bitget_pass = os.environ.get("BITGET_PASSPHRASE", "")
 
     bybit_cfg = {"testnet": False, "rate_limit": {"requests_per_second": 10, "orders_per_second": 5}}
-    bybit = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
-    gate  = GateAdapterReal(credentials=gate_creds)
+    bybit  = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
+    bitget = BitgetAdapterReal(credentials=bitget_creds, passphrase=bitget_pass)
 
     ob_engine = OrderBookEngine(validate_checksum=False)
     bybit.on_orderbook(ob_engine.handle)
-    gate.on_orderbook(ob_engine.handle)
+    bitget.on_orderbook(ob_engine.handle)
 
     fee_table = FeeTable(overrides={
-        (Exchange.GATE,  MarketType.PERPETUAL): FeeSchedule(maker_bps=2.0, taker_bps=5.0),
-        (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
+        (Exchange.BITGET, MarketType.PERPETUAL): FeeSchedule(maker_bps=2.0, taker_bps=6.0),
+        (Exchange.BYBIT,  MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
 
@@ -354,8 +356,8 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.BUY, OrderType.MARKET, qty)
             return order.id, qty
-        else:  # gate
-            order = await gate.open_long(sym, VIRTUAL_SIZE_USDT, price)
+        else:  # bitget
+            order = await bitget.open_long(sym, VIRTUAL_SIZE_USDT, price)
             return order.id, order.qty
 
     async def _do_open_short(exchange: str, sym: str, price: float) -> tuple:
@@ -365,8 +367,8 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.SELL, OrderType.MARKET, qty)
             return order.id, qty
-        else:  # gate
-            order = await gate.open_short(sym, VIRTUAL_SIZE_USDT, price)
+        else:  # bitget
+            order = await bitget.open_short(sym, VIRTUAL_SIZE_USDT, price)
             return order.id, order.qty
 
     async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> None:
@@ -375,7 +377,7 @@ async def bot_main_real(symbols: list[str]) -> None:
             await bybit.place_order(sym, MarketType.PERPETUAL,
                                     OrderSide.SELL, OrderType.MARKET, qty)
         else:
-            await gate.close_long(sym, qty, price)
+            await bitget.close_long(sym, qty, price)
 
     async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> None:
         """Закрыть шорт."""
@@ -383,14 +385,14 @@ async def bot_main_real(symbols: list[str]) -> None:
             await bybit.place_order(sym, MarketType.PERPETUAL,
                                     OrderSide.BUY, OrderType.MARKET, qty)
         else:
-            await gate.close_short(sym, qty, price)
+            await bitget.close_short(sym, qty, price)
 
     async def _on_book_update(updated) -> None:
         global _last_entry_at
         if not updated.is_synced or updated.is_stale:
             return
         sym      = updated.symbol
-        other_ex = Exchange.BYBIT if updated.exchange == Exchange.GATE else Exchange.GATE
+        other_ex = Exchange.BYBIT if updated.exchange == Exchange.BITGET else Exchange.BITGET
         other    = ob_engine.get(other_ex, sym, MarketType.PERPETUAL)
         if other is None or not other.is_synced or other.is_stale:
             return
@@ -577,10 +579,11 @@ async def bot_main_real(symbols: list[str]) -> None:
                 f.write(f"{time.strftime('%H:%M:%S')} Bybit instruments load error: {e}\n")
 
     async def _fetch_exchange_balances() -> None:
-        by_key   = bybit_creds.api_key
-        by_sec   = bybit_creds.api_secret
-        gate_key = gate_creds.api_key
-        gate_sec = gate_creds.api_secret
+        by_key    = bybit_creds.api_key
+        by_sec    = bybit_creds.api_secret
+        bg_key    = bitget_creds.api_key
+        bg_sec    = bitget_creds.api_secret
+        bg_pp     = bitget_pass
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
             if by_key and by_sec:
                 for acct in ("UNIFIED", "CONTRACT"):
@@ -606,22 +609,31 @@ async def bot_main_real(symbols: list[str]) -> None:
                             break
                     except Exception:
                         pass
-            if gate_key and gate_sec:
+            if bg_key and bg_sec and bg_pp:
                 try:
-                    ts        = str(int(time.time()))
-                    path      = "/api/v4/futures/usdt/accounts"
-                    body_hash = hashlib.sha512(b"").hexdigest()
-                    msg       = f"GET\n{path}\n\n{body_hash}\n{ts}"
-                    sig       = hmac.new(gate_sec.encode(), msg.encode(), hashlib.sha512).hexdigest()
+                    ts_ms  = str(int(time.time() * 1000))
+                    bg_path = "/api/v2/mix/account/account?productType=USDT-FUTURES&marginCoin=USDT"
+                    msg    = ts_ms + "GET" + bg_path
+                    sig    = base64.b64encode(
+                        hmac.new(bg_sec.encode(), msg.encode(), hashlib.sha256).digest()
+                    ).decode()
                     async with s.get(
-                        f"https://api.gateio.ws{path}",
-                        headers={"KEY": gate_key, "SIGN": sig, "Timestamp": ts, "Accept": "application/json"},
+                        f"https://api.bitget.com{bg_path.split('?')[0]}",
+                        params={"productType": "USDT-FUTURES", "marginCoin": "USDT"},
+                        headers={
+                            "ACCESS-KEY":        bg_key,
+                            "ACCESS-SIGN":       sig,
+                            "ACCESS-TIMESTAMP":  ts_ms,
+                            "ACCESS-PASSPHRASE": bg_pp,
+                            "locale":            "en-US",
+                        },
                     ) as r:
                         data = await r.json(content_type=None)
-                    val = float(data.get("available") or 0)
-                    _stats["gate_usdt"] = val
-                    if _stats["gate_usdt_start"] < 0:
-                        _stats["gate_usdt_start"] = val
+                    if str(data.get("code", "")) == "00000":
+                        val = float((data.get("data") or {}).get("available") or 0)
+                        _stats["bitget_usdt"] = val
+                        if _stats["bitget_usdt_start"] < 0:
+                            _stats["bitget_usdt_start"] = val
                 except Exception:
                     pass
 
@@ -640,8 +652,8 @@ async def bot_main_real(symbols: list[str]) -> None:
             for k in stale_keys:
                 del _spread_map[k]
 
-            _stats["bybit_connected"] = bybit.health.ws_connected
-            _stats["gate_connected"]  = gate.health.ws_connected
+            _stats["bybit_connected"]  = bybit.health.ws_connected
+            _stats["bitget_connected"] = bitget.health.ws_connected
 
             _portfolio["unrealized_pnl"] = round(sum(
                 VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - _spread_map[k]["executable_spread_bps"]) / 10_000
@@ -654,9 +666,9 @@ async def bot_main_real(symbols: list[str]) -> None:
 
             # Авто-пауза если баланс ещё не загружен или недостаточен
             global _paused, _auto_paused
-            bybit_ok = _stats["bybit_usdt"] >= VIRTUAL_SIZE_USDT
-            gate_ok  = _stats["gate_usdt"]  >= VIRTUAL_SIZE_USDT
-            if not (bybit_ok and gate_ok):
+            bybit_ok  = _stats["bybit_usdt"]  >= VIRTUAL_SIZE_USDT
+            bitget_ok = _stats["bitget_usdt"] >= VIRTUAL_SIZE_USDT
+            if not (bybit_ok and bitget_ok):
                 if not _paused:
                     _paused = True
                     _auto_paused = True
@@ -667,11 +679,11 @@ async def bot_main_real(symbols: list[str]) -> None:
 
     await _load_bybit_instruments()
     await bybit.connect()
-    await gate.connect()
+    await bitget.connect()
 
     for sym in symbols:
         await bybit.subscribe_orderbook(sym, MarketType.PERPETUAL)
-        await gate.subscribe_orderbook(sym, MarketType.PERPETUAL)
+        await bitget.subscribe_orderbook(sym, MarketType.PERPETUAL)
 
     await _stats_loop()
 
