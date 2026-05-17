@@ -579,11 +579,8 @@ async def bot_main_real(symbols: list[str]) -> None:
                 f.write(f"{time.strftime('%H:%M:%S')} Bybit instruments load error: {e}\n")
 
     async def _fetch_exchange_balances() -> None:
-        by_key    = bybit_creds.api_key
-        by_sec    = bybit_creds.api_secret
-        bg_key    = bitget_creds.api_key
-        bg_sec    = bitget_creds.api_secret
-        bg_pp     = bitget_pass
+        by_key = bybit_creds.api_key
+        by_sec = bybit_creds.api_secret
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
             if by_key and by_sec:
                 for acct in ("UNIFIED", "CONTRACT"):
@@ -609,32 +606,13 @@ async def bot_main_real(symbols: list[str]) -> None:
                             break
                     except Exception:
                         pass
-            if bg_key and bg_sec and bg_pp:
-                try:
-                    ts_ms  = str(int(time.time() * 1000))
-                    bg_path = "/api/v2/mix/account/account?productType=USDT-FUTURES&marginCoin=USDT"
-                    msg    = ts_ms + "GET" + bg_path
-                    sig    = base64.b64encode(
-                        hmac.new(bg_sec.encode(), msg.encode(), hashlib.sha256).digest()
-                    ).decode()
-                    async with s.get(
-                        f"https://api.bitget.com{bg_path}",
-                        headers={
-                            "ACCESS-KEY":        bg_key,
-                            "ACCESS-SIGN":       sig,
-                            "ACCESS-TIMESTAMP":  ts_ms,
-                            "ACCESS-PASSPHRASE": bg_pp,
-                            "locale":            "en-US",
-                        },
-                    ) as r:
-                        data = await r.json(content_type=None)
-                    if str(data.get("code", "")) == "00000":
-                        val = float((data.get("data") or {}).get("available") or 0)
-                        _stats["bitget_usdt"] = val
-                        if _stats["bitget_usdt_start"] < 0:
-                            _stats["bitget_usdt_start"] = val
-                except Exception:
-                    pass
+        try:
+            val = await bitget._rest.get_usdt_balance()
+            _stats["bitget_usdt"] = val
+            if _stats["bitget_usdt_start"] < 0:
+                _stats["bitget_usdt_start"] = val
+        except Exception:
+            pass
 
     async def _stats_loop() -> None:
         _bal_fetch_t  = [0.0]

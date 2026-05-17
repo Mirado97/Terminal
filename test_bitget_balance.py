@@ -1,46 +1,35 @@
-"""Тест баланса Bitget — печатает сырой ответ API."""
+"""Тест баланса Bitget через BitgetFuturesRestClient."""
 import asyncio
-import base64
-import hashlib
-import hmac
 import os
-import time
 from pathlib import Path
 
-import aiohttp
 from dotenv import load_dotenv
 
 load_dotenv(Path(".env"))
 
-KEY  = os.environ.get("BITGET_API_KEY", "")
-SEC  = os.environ.get("BITGET_API_SECRET", "")
-PP   = os.environ.get("BITGET_PASSPHRASE", "")
+from credentials.manager import ExchangeCredentials
+from exchanges.bitget.futures_rest import BitgetFuturesRestClient
+
+KEY = os.environ.get("BITGET_API_KEY", "")
+SEC = os.environ.get("BITGET_API_SECRET", "")
+PP  = os.environ.get("BITGET_PASSPHRASE", "")
 
 print(f"KEY длина:        {len(KEY)}")
 print(f"SECRET длина:     {len(SEC)}")
 print(f"PASSPHRASE длина: {len(PP)}")
 
-async def main() -> None:
-    path = "/api/v2/mix/account/account?productType=USDT-FUTURES&marginCoin=USDT"
-    ts   = str(int(time.time() * 1000))
-    msg  = ts + "GET" + path
-    sig  = base64.b64encode(
-        hmac.new(SEC.encode(), msg.encode(), hashlib.sha256).digest()
-    ).decode()
-    headers = {
-        "ACCESS-KEY":        KEY,
-        "ACCESS-SIGN":       sig,
-        "ACCESS-TIMESTAMP":  ts,
-        "ACCESS-PASSPHRASE": PP,
-        "Content-Type":      "application/json",
-        "locale":            "en-US",
-    }
-    url = f"https://api.bitget.com{path}"  # query string уже в URL — не передаём params=
 
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
-        async with s.get(url, headers=headers) as r:
-            text = await r.text()
-            print(f"\nHTTP status: {r.status}")
-            print(f"Response:    {text}")
+async def main() -> None:
+    creds  = ExchangeCredentials(api_key=KEY, api_secret=SEC)
+    client = BitgetFuturesRestClient(creds, PP)
+    await client.start()
+    try:
+        balance = await client.get_usdt_balance()
+        print(f"\nБаланс USDT: {balance}")
+    except Exception as e:
+        print(f"\nОШИБКА: {e}")
+    finally:
+        await client.stop()
+
 
 asyncio.run(main())
