@@ -17,6 +17,9 @@ API_KEY = os.environ.get("GATE_API_KEY", "")
 API_SEC = os.environ.get("GATE_API_SECRET", "")
 SYMBOLS = ["BTC_USDT", "ETH_USDT", "SOL_USDT"]
 
+print(f"KEY загружен: {'да' if API_KEY else 'НЕТ'} (длина={len(API_KEY)})")
+print(f"SEC загружен: {'да' if API_SEC else 'НЕТ'} (длина={len(API_SEC)})")
+
 
 async def test_ws():
     print("\n=== Gate.io Futures WS ===")
@@ -39,7 +42,7 @@ async def test_ws():
                 msg = orjson.loads(raw)
                 if msg.get("event") == "update" and msg.get("channel") == "futures.book_ticker":
                     r = msg["result"]
-                    print(f"  {r['s']:15s}  bid={r['b']:>12}  ask={r['a']:>12}  t={r['t']}")
+                    print(f"  {r['s']:15s}  bid={r['b']:>12}  ask={r['a']:>12}")
                     count += 1
                     if count >= 9:
                         break
@@ -73,7 +76,6 @@ async def test_rest():
     else:
         print(f"  total:     {data.get('total')}")
         print(f"  available: {data.get('available')}")
-        print(f"  unrealised_pnl: {data.get('unrealised_pnl')}")
         print("  REST OK")
 
 
