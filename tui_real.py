@@ -55,6 +55,7 @@ _pending_entries: set[tuple] = set()
 _trades_page = 0
 _bybit_qty_steps: dict[str, float] = {}  # symbol → qtyStep из instruments-info
 _last_entry_at: float = 0.0              # monotonic time последнего входа
+_mexc_fail_count: int = 0               # счётчик подряд идущих ошибок MEXC
 
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
@@ -160,6 +161,7 @@ def build_ui() -> Layout:
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
     pause_str = "  [bold red]⏸ ПАУЗА[/]" if _paused else ""
+    mexc_cb   = "  [bold red]⚠ MEXC BLOCKED[/]" if _mexc_fail_count >= 3 else ""
 
     layout["header"].update(Panel(
         Text.from_markup(
@@ -168,7 +170,7 @@ def build_ui() -> Layout:
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
             f"MX: {mx_str}  "
             f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
-            f"{pause_str}"
+            f"{pause_str}{mexc_cb}"
         ),
         style="on grey7",
     ))
@@ -384,7 +386,7 @@ async def bot_main_real(symbols: list[str]) -> None:
             await mexc.close_short(sym, qty, price)
 
     async def _on_book_update(updated) -> None:
-        global _last_entry_at
+        global _last_entry_at, _mexc_fail_count
         if not updated.is_synced or updated.is_stale:
             return
         sym   = updated.symbol
@@ -475,7 +477,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                     if close_reason == "тайм-аут":
                         _cooldown[sym] = now_mono + COOLDOWN_S
 
-            elif not _paused:
+            elif not _paused and _mexc_fail_count < 3:
                 # ── Вход с 100мс задержкой ───────────────────────────────
                 if (ep > ENTRY_THRESHOLD
                         and len(_positions) < MAX_POSITIONS
@@ -510,7 +512,8 @@ async def bot_main_real(symbols: list[str]) -> None:
                         try:
                             buy_id, buy_qty = await _do_open_long(_buy_ex, _sym, buy_price)
                         except Exception as e:
-                            _cooldown[_sym] = time.monotonic() + 60  # не спамим при ошибке
+                            _mexc_fail_count += 1
+                            _cooldown[_sym] = time.monotonic() + 60
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                             with open(log_file, "a") as f:
                                 f.write(f"{time.strftime('%H:%M:%S')} OPEN LONG ERROR {_sym}: {e}\n")
@@ -520,7 +523,8 @@ async def bot_main_real(symbols: list[str]) -> None:
                         try:
                             sell_id, sell_qty = await _do_open_short(_sell_ex, _sym, sell_price)
                         except Exception as e:
-                            _cooldown[_sym] = time.monotonic() + 60  # не спамим при ошибке
+                            _mexc_fail_count += 1
+                            _cooldown[_sym] = time.monotonic() + 60
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                             with open(log_file, "a") as f:
                                 f.write(f"{time.strftime('%H:%M:%S')} OPEN SHORT ERROR {_sym}: {e}\n")
@@ -531,6 +535,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                                 pass
                             return
 
+                        _mexc_fail_count = 0  # оба ордера открылись — MEXC здоров
                         _positions[_key] = {
                             "symbol":               _sym,
                             "buy_exchange":         _buy_ex,
