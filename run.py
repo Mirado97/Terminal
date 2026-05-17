@@ -115,8 +115,8 @@ async def run() -> None:
 
     # ── Spread калькулятор: перп комиссии (Bybit 5.5 + MEXC 6 = 11.5 bps) ──
     fee_table = FeeTable(overrides={
-        (Exchange.MEXC,  MarketType.PERPETUAL): FeeSchedule(maker_bps=0.0, taker_bps=6.0),
-        (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=2.0, taker_bps=5.5),
+        (Exchange.MEXC,  MarketType.PERPETUAL): FeeSchedule(maker_bps=0.8, taker_bps=3.2),
+        (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
     detector = SpreadDetector(
@@ -136,7 +136,7 @@ async def run() -> None:
             "sell_exchange":         opp.sell_exchange.value,
             "raw_spread_bps":        round(opp.raw_spread_bps, 2),
             "executable_spread_bps": round(opp.executable_spread_bps, 2),
-            "fee_cost_bps":          11.5,
+            "fee_cost_bps":          12.2,
             "executed":              False,
             "created_at":            time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
@@ -168,7 +168,7 @@ async def run() -> None:
                             "sell_exchange":         sell_book.exchange.value,
                             "raw_spread_bps":        round(result.raw_spread_bps, 2),
                             "executable_spread_bps": round(result.executable_spread_bps, 2),
-                            "fee_cost_bps":          11.5,
+                            "fee_cost_bps":          12.2,
                             "executed":              False,
                             "created_at":            time.strftime("%Y-%m-%dT%H:%M:%S"),
                         }
@@ -215,7 +215,7 @@ async def run() -> None:
     print("\n" + "=" * 60)
     print("  Arbitrage Terminal — FUTURES x1 LEVERAGE")
     print(f"  Bybit Linear + MEXC Futures | Символов: {len(symbols)}")
-    print(f"  Порог прибыли: >11.5 bps (Bybit 5.5 + MEXC 6.0)")
+    print(f"  Порог прибыли: >12.2 bps (Bybit 9.0 + MEXC 3.2)")
     print("  http://localhost:8080/api/spreads/live")
     print("  Ctrl+C для остановки")
     print("=" * 60 + "\n")
