@@ -26,16 +26,90 @@ from run import _BLACKLIST  # noqa: E402
 # ── Shared state ──────────────────────────────────────────────────────────
 _spread_map: dict[tuple, dict] = {}
 _stats = {
-    "pairs":            0,
-    "profitable":       0,
-    "best_spread":      0.0,
-    "best_symbol":      "—",
-    "bybit_connected":  False,
-    "mexc_connected":   False,
-    "start_time":       time.time(),
+    "pairs":           0,
+    "profitable":      0,
+    "best_spread":     0.0,
+    "best_symbol":     "—",
+    "bybit_connected": False,
+    "mexc_connected":  False,
+    "start_time":      time.time(),
 }
 
 FEE_BPS = 12.2
+
+# ── Virtual trading ───────────────────────────────────────────────────────
+_trades: list[dict] = []
+_positions: dict[tuple, dict] = {}
+_portfolio = {"balance": 100.0, "realized_pnl": 0.0, "unrealized_pnl": 0.0}
+_trades_page = 0
+_last_page_advance = time.time()
+
+VIRTUAL_SIZE_USDT = 50.0   # размер позиции на сторону (лонг $50 + шорт $50 = $100)
+ENTRY_THRESHOLD   = 5.0    # bps executable — порог входа
+EXIT_THRESHOLD    = -2.0   # bps executable — порог выхода
+MAX_POSITIONS     = 3
+TRADES_PER_PAGE   = 10
+PAGE_INTERVAL_S   = 10.0   # авто-переключение страницы истории
+
+
+def _virtual_update() -> None:
+    global _trades_page, _last_page_advance
+
+    # Закрываем позиции когда спред схлопнулся
+    for key in list(_positions.keys()):
+        pos = _positions[key]
+        current = _spread_map.get(key)
+        if current is None:
+            continue
+        ep = current["executable_spread_bps"]
+        if ep < EXIT_THRESHOLD:
+            entry_ep = pos["entry_executable_bps"]
+            pnl_bps  = entry_ep - ep
+            pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 4)
+            _portfolio["realized_pnl"] += pnl_usdt
+            _portfolio["balance"]      += pnl_usdt
+            hold_s = int(time.time() - pos["opened_at"])
+            _trades.append({
+                "symbol":    pos["symbol"],
+                "entry_bps": round(entry_ep, 2),
+                "exit_bps":  round(ep, 2),
+                "pnl_bps":   round(pnl_bps, 2),
+                "pnl_usdt":  pnl_usdt,
+                "hold":      f"{hold_s//60}м{hold_s%60:02d}с",
+                "time":      time.strftime("%H:%M:%S"),
+            })
+            if len(_trades) > 500:
+                _trades.pop(0)
+            del _positions[key]
+
+    # Открываем новые позиции
+    if len(_positions) < MAX_POSITIONS:
+        candidates = sorted(
+            [
+                (k, v) for k, v in _spread_map.items()
+                if v["executable_spread_bps"] > ENTRY_THRESHOLD
+                and k not in _positions
+                and v["symbol"] not in _BLACKLIST
+            ],
+            key=lambda x: x[1]["executable_spread_bps"],
+            reverse=True,
+        )
+        for key, opp in candidates[: MAX_POSITIONS - len(_positions)]:
+            _positions[key] = {
+                "symbol":               opp["symbol"],
+                "buy_exchange":         opp["buy_exchange"],
+                "sell_exchange":        opp["sell_exchange"],
+                "entry_executable_bps": opp["executable_spread_bps"],
+                "opened_at":            time.time(),
+            }
+
+    # Нереализованный PnL
+    unreal = sum(
+        VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - _spread_map[k]["executable_spread_bps"]) / 10_000
+        for k, pos in _positions.items()
+        if k in _spread_map
+    )
+    _portfolio["unrealized_pnl"] = round(unreal, 4)
 
 
 # ── UI builder ────────────────────────────────────────────────────────────
@@ -49,12 +123,28 @@ def _conn(ok: bool) -> str:
     return "[green]●[/]" if ok else "[red]●[/]"
 
 
+def _pnl_str(val: float, decimals: int = 4) -> str:
+    fmt = f".{decimals}f"
+    if val >= 0:
+        return f"[green]+{val:{fmt}}[/]"
+    return f"[red]{val:{fmt}}[/]"
+
+
 def build_ui() -> Layout:
+    global _trades_page, _last_page_advance
+
+    # Авто-переключение страницы истории
+    if time.time() - _last_page_advance > PAGE_INTERVAL_S:
+        n_pages = max(1, (len(_trades) + TRADES_PER_PAGE - 1) // TRADES_PER_PAGE)
+        _trades_page = (_trades_page + 1) % n_pages
+        _last_page_advance = time.time()
+
     layout = Layout()
     layout.split_column(
-        Layout(name="header", size=3),
-        Layout(name="main"),
-        Layout(name="footer", size=1),
+        Layout(name="header",  size=3),
+        Layout(name="middle",  size=14),
+        Layout(name="spreads", size=9),
+        Layout(name="footer",  size=1),
     )
 
     # ── Header ──────────────────────────────────────────────────────────
@@ -62,69 +152,142 @@ def build_ui() -> Layout:
     mexc_s  = _conn(_stats["mexc_connected"])
     best    = f"[green]+{_stats['best_spread']:.2f}bps[/] {_stats['best_symbol']}" \
               if _stats["best_spread"] > 0 else "[dim]нет[/]"
+    rpnl    = _portfolio["realized_pnl"]
+    upnl    = _portfolio["unrealized_pnl"]
+    bal     = _portfolio["balance"]
 
     layout["header"].update(Panel(
         Text.from_markup(
             f"[bold cyan]◈ ARBITRAGE TERMINAL[/]  Bybit: {bybit_s}  MEXC Futures: {mexc_s}  │  "
-            f"Пар: [yellow]{_stats['pairs']}[/]  │  "
-            f"Прибыльных: [green]{_stats['profitable']}[/]  │  "
-            f"Лучший: {best}  │  "
-            f"Uptime: [dim]{_uptime()}[/]"
+            f"Пар: [yellow]{_stats['pairs']}[/]  Прибыльных: [green]{_stats['profitable']}[/]  "
+            f"Лучший: {best}  Uptime: [dim]{_uptime()}[/]  │  "
+            f"Виртуал: [yellow]${bal:.2f}[/]  R:{_pnl_str(rpnl, 4)}  U:{_pnl_str(upnl, 4)}"
         ),
         style="on grey7",
     ))
 
-    # ── Spreads table ────────────────────────────────────────────────────
-    tbl = Table(
-        box=box.SIMPLE_HEAVY,
-        header_style="bold white on grey15",
-        expand=True,
-        show_edge=False,
+    # ── Middle: открытые позиции (лево) + история сделок (право) ────────
+    layout["middle"].split_row(
+        Layout(name="positions", ratio=2),
+        Layout(name="history",   ratio=3),
     )
-    tbl.add_column("Символ",   style="cyan",   width=14)
-    tbl.add_column("Лонг",     width=7)
-    tbl.add_column("Шорт",     width=7)
-    tbl.add_column("Спред",    justify="right", width=9)
-    tbl.add_column("Прибыль",  justify="right", width=11)
-    tbl.add_column("Обновлено",width=10)
+
+    # Открытые позиции
+    pos_tbl = Table(
+        box=box.SIMPLE_HEAVY, header_style="bold white on grey15",
+        expand=True, show_edge=False,
+    )
+    pos_tbl.add_column("Символ",    style="cyan",    width=12)
+    pos_tbl.add_column("Лонг",      width=5)
+    pos_tbl.add_column("Вход bps",  justify="right", width=9)
+    pos_tbl.add_column("Сейчас",    justify="right", width=9)
+    pos_tbl.add_column("Unreal $",  justify="right", width=10)
+
+    for key, pos in _positions.items():
+        current = _spread_map.get(key)
+        cur_ep  = current["executable_spread_bps"] if current else 0.0
+        unreal  = VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - cur_ep) / 10_000
+        hold_s  = int(time.time() - pos["opened_at"])
+        hold_str = f"{hold_s//60}м{hold_s%60:02d}с"
+        pos_tbl.add_row(
+            pos["symbol"],
+            pos["buy_exchange"].upper()[:5],
+            f"+{pos['entry_executable_bps']:.2f}",
+            f"{cur_ep:+.2f}",
+            _pnl_str(unreal, 4),
+        )
+
+    layout["positions"].update(Panel(
+        pos_tbl,
+        title=f"[bold]Позиции[/] {len(_positions)}/{MAX_POSITIONS}  порог входа >{ENTRY_THRESHOLD:.0f}bps",
+    ))
+
+    # История сделок
+    hist_tbl = Table(
+        box=box.SIMPLE_HEAVY, header_style="bold white on grey15",
+        expand=True, show_edge=False,
+    )
+    hist_tbl.add_column("Символ",   style="cyan",    width=12)
+    hist_tbl.add_column("Вход bps", justify="right", width=9)
+    hist_tbl.add_column("Выход bps",justify="right", width=10)
+    hist_tbl.add_column("P&L bps",  justify="right", width=9)
+    hist_tbl.add_column("P&L $",    justify="right", width=9)
+    hist_tbl.add_column("Держал",   width=8)
+    hist_tbl.add_column("Закрыт",   width=8)
+
+    trades_rev = list(reversed(_trades))
+    n_pages    = max(1, (len(trades_rev) + TRADES_PER_PAGE - 1) // TRADES_PER_PAGE)
+    page       = _trades_page % n_pages
+    page_slice = trades_rev[page * TRADES_PER_PAGE : (page + 1) * TRADES_PER_PAGE]
+
+    for t in page_slice:
+        hist_tbl.add_row(
+            t["symbol"],
+            f"+{t['entry_bps']:.2f}",
+            f"{t['exit_bps']:+.2f}",
+            _pnl_str(t["pnl_bps"], 2),
+            _pnl_str(t["pnl_usdt"], 4),
+            t["hold"],
+            t["time"],
+        )
+
+    layout["history"].update(Panel(
+        hist_tbl,
+        title="[bold]История виртуальных сделок[/]",
+        subtitle=f"[dim]стр. {page + 1}/{n_pages}  авто {PAGE_INTERVAL_S:.0f}с[/]",
+    ))
+
+    # ── Spreads (топ 5) ──────────────────────────────────────────────────
+    tbl = Table(
+        box=box.SIMPLE_HEAVY, header_style="bold white on grey15",
+        expand=True, show_edge=False,
+    )
+    tbl.add_column("Символ",    style="cyan",    width=14)
+    tbl.add_column("Лонг",      width=7)
+    tbl.add_column("Шорт",      width=7)
+    tbl.add_column("Спред",     justify="right", width=9)
+    tbl.add_column("Прибыль",   justify="right", width=11)
+    tbl.add_column("Обновлено", width=10)
 
     rows = sorted(
         (v for v in _spread_map.values() if v["symbol"] not in _BLACKLIST),
         key=lambda x: x["executable_spread_bps"],
         reverse=True,
-    )[:50]
+    )[:5]
 
     for row in rows:
         ep  = row["executable_spread_bps"]
         raw = row["raw_spread_bps"]
 
         if ep > 0:
-            ep_str   = f"[bold green]+{ep:.2f} bps[/]"
-            raw_str  = f"[green]{raw:+.2f}[/]"
+            ep_str  = f"[bold green]+{ep:.2f} bps[/]"
+            raw_str = f"[green]{raw:+.2f}[/]"
         elif ep > -5:
-            ep_str   = f"[yellow]{ep:.2f} bps[/]"
-            raw_str  = f"[yellow]{raw:+.2f}[/]"
+            ep_str  = f"[yellow]{ep:.2f} bps[/]"
+            raw_str = f"[yellow]{raw:+.2f}[/]"
         else:
-            ep_str   = f"[dim]{ep:.2f} bps[/]"
-            raw_str  = f"[dim]{raw:+.2f}[/]"
+            ep_str  = f"[dim]{ep:.2f} bps[/]"
+            raw_str = f"[dim]{raw:+.2f}[/]"
 
-        buy  = row["buy_exchange"].upper()[:5]
+        buy = row["buy_exchange"].upper()[:5]
         sell = row["sell_exchange"].upper()[:5]
         ts   = row["created_at"][11:19]
 
         tbl.add_row(row["symbol"], buy, sell, raw_str, ep_str, ts)
 
-    layout["main"].update(Panel(
+    layout["spreads"].update(Panel(
         tbl,
         title="[bold]Bybit Linear  ↔  MEXC Futures  │  x1 leverage[/]",
-        subtitle=f"[dim]порог прибыли >{FEE_BPS} bps  │  топ 50 из {len(_spread_map)}[/]",
+        subtitle=f"[dim]порог прибыли >{FEE_BPS} bps  │  топ 5 из {len(_spread_map)}[/]",
     ))
 
     # ── Footer ───────────────────────────────────────────────────────────
     layout["footer"].update(
         Text.from_markup(
-            "  [dim]q / Ctrl+C — выход   │   "
-            "Зелёный = прибыльный спред после комиссий[/]"
+            f"  [dim]q / Ctrl+C — выход   │  "
+            f"Зелёный = прибыльный спред после комиссий   │  "
+            f"Виртуал: вход >{ENTRY_THRESHOLD:.0f}bps, выход <{EXIT_THRESHOLD:.0f}bps, "
+            f"${VIRTUAL_SIZE_USDT:.0f}/сторону[/]"
         )
     )
 
@@ -203,6 +366,8 @@ async def bot_main(symbols: list[str]) -> None:
                 _stats["best_spread"] = best["executable_spread_bps"]
                 _stats["best_symbol"] = best["symbol"]
 
+            _virtual_update()
+
     await bybit.connect()
     await mexc.connect()
 
@@ -216,7 +381,6 @@ async def bot_main(symbols: list[str]) -> None:
 # ── Entry point ───────────────────────────────────────────────────────────
 
 async def main() -> None:
-    # Подавляем логи — в TUI они мешают
     logging.disable(logging.WARNING)
 
     from core.logging import setup_logging
