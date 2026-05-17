@@ -341,7 +341,7 @@ async def bot_main_real(symbols: list[str]) -> None:
     gate.on_orderbook(ob_engine.handle)
 
     fee_table = FeeTable(overrides={
-        (Exchange.GATE,  MarketType.PERPETUAL): FeeSchedule(maker_bps=0.0, taker_bps=5.0),
+        (Exchange.GATE,  MarketType.PERPETUAL): FeeSchedule(maker_bps=2.0, taker_bps=5.0),
         (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
