@@ -118,9 +118,11 @@ class BybitRestClient:
                 "orderId": order_id,
                 "limit": "10",
             }, signed=True)
-            total = sum(float(e.get("execFee", 0)) for e in data.get("result", {}).get("list", []))
+            executions = data.get("result", {}).get("list", [])
+            total = sum(float(e.get("execFee", 0)) for e in executions)
             return round(total, 6)
-        except Exception:
+        except Exception as e:
+            logger.warning("bybit get_execution_fee failed", symbol=symbol, order_id=order_id, error=str(e))
             return 0.0
 
     async def set_leverage(self, symbol: str, leverage: int = 1) -> None:
