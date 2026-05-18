@@ -85,9 +85,30 @@ class MexcSpotRestClient:
             created_at_ms=int(time.time() * 1000),
         )
 
+    async def get_token_balance(self, asset: str) -> float:
+        """Вернуть свободный баланс токена на споте."""
+        assert self._session
+        params = {"timestamp": str(int(time.time() * 1000))}
+        qs  = "&".join(f"{k}={v}" for k, v in params.items())
+        sig = hmac.new(self._creds.api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
+        async with self._session.get(
+            f"{BASE_URL}/api/v3/account?{qs}&signature={sig}",
+            headers={"X-MEXC-APIKEY": self._creds.api_key},
+        ) as r:
+            data = orjson.loads(await r.read())
+        for b in data.get("balances", []):
+            if b["asset"] == asset:
+                return float(b["free"])
+        return 0.0
+
     async def sell_market(self, symbol: str, token_qty: float) -> Order:
         """Продать token_qty токенов → получить USDT."""
         precision = await self._get_base_precision(symbol)
+        # берём реальный баланс чтобы продать всё без остатка
+        asset = symbol.replace("USDT", "")
+        actual_qty = await self.get_token_balance(asset)
+        if actual_qty > 0:
+            token_qty = actual_qty
         qty_str = f"{token_qty:.{precision}f}"
         params = {
             "symbol": symbol,
