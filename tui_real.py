@@ -44,7 +44,7 @@ _stats = {
 }
 _paused: bool = False
 
-FEE_BPS = 10.0  # Bybit 9.0 taker + MEXC spot 1.0 taker (с MX токеном)
+FEE_BPS = 30.0  # MEXC spot 10 bps (x2) + Bybit perp 10 bps (x2) = 40 bps total, ~30 bps net
 
 # ── Реальные позиции и история ────────────────────────────────────────────
 _trades: list[dict] = []
