@@ -110,21 +110,18 @@ class BybitRestClient:
         )
 
     async def get_execution_fee(self, symbol: str, order_id: str) -> float:
-        """Вернуть реальную комиссию по orderId в USDT."""
+        """Вернуть сумму комиссий последних 2 исполнений по символу (open+close)."""
         try:
             data = await self._get("/v5/execution/list", {
                 "category": "linear",
                 "symbol": symbol,
-                "orderId": order_id,
-                "limit": "10",
+                "limit": "2",
             }, signed=True)
             executions = data.get("result", {}).get("list", [])
-            logger.info("bybit execution list", symbol=symbol, order_id=order_id,
-                        count=len(executions), raw=str(data)[:300])
             total = sum(float(e.get("execFee", 0)) for e in executions)
             return round(total, 6)
         except Exception as e:
-            logger.warning("bybit get_execution_fee failed", symbol=symbol, order_id=order_id, error=str(e))
+            logger.warning("bybit get_execution_fee failed", symbol=symbol, error=str(e))
             return 0.0
 
     async def set_leverage(self, symbol: str, leverage: int = 1) -> None:
