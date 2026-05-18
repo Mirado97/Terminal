@@ -459,7 +459,8 @@ async def bot_main_real(symbols: list[str]) -> None:
                         with open(log_file, "a") as f:
                             f.write(f"{time.strftime('%H:%M:%S')} CLOSE ERROR {sym}: {e}\n")
 
-                    # Реальные комиссии с бирж
+                    # Реальные комиссии с бирж — небольшая пауза чтобы биржи записали исполнение
+                    await asyncio.sleep(0.5)
                     bybit_oid  = close_short_id if sell_ex == "bybit" else close_long_id
                     mexc_oid   = close_long_id  if buy_ex  == "mexc"  else close_short_id
                     async def _zero() -> float:
