@@ -119,6 +119,8 @@ class BybitRestClient:
                 "limit": "10",
             }, signed=True)
             executions = data.get("result", {}).get("list", [])
+            logger.info("bybit execution list", symbol=symbol, order_id=order_id,
+                        count=len(executions), raw=str(data)[:300])
             total = sum(float(e.get("execFee", 0)) for e in executions)
             return round(total, 6)
         except Exception as e:
