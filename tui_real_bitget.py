@@ -5,6 +5,7 @@ tui_real.py — Arbitrage Terminal с реальным исполнением о
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import importlib
@@ -32,19 +33,19 @@ from run import _BLACKLIST  # noqa: E402
 # ── Shared state ──────────────────────────────────────────────────────────
 _spread_map: dict[tuple, dict] = {}
 _stats = {
-    "pairs":           0,
-    "bybit_connected": False,
-    "mexc_connected":  False,
-    "start_time":      time.time(),
-    "mx_balance":      -1.0,
-    "bybit_usdt":      -1.0,
-    "mexc_usdt":       -1.0,
-    "bybit_usdt_start": -1.0,   # баланс при старте сессии (для R:)
-    "mexc_usdt_start":  -1.0,
+    "pairs":             0,
+    "bybit_connected":   False,
+    "bitget_connected":  False,
+    "start_time":        time.time(),
+    "bybit_usdt":        -1.0,
+    "bitget_usdt":       -1.0,
+    "bybit_usdt_start":  -1.0,
+    "bitget_usdt_start": -1.0,
 }
 _paused: bool = False
+_auto_paused: bool = False  # авто-пауза из-за недостаточного баланса
 
-FEE_BPS = 10.0  # Bybit 9.0 taker + MEXC spot 1.0 taker (с MX токеном)
+FEE_BPS = 15.0  # Bybit 9.0 taker + Bitget 6.0 taker
 
 # ── Реальные позиции и история ────────────────────────────────────────────
 _trades: list[dict] = []
@@ -140,10 +141,8 @@ def build_ui() -> Layout:
     )
 
     # ── Header ──────────────────────────────────────────────────────────
-    bybit_s = _conn(_stats["bybit_connected"])
-    mexc_s  = _conn(_stats["mexc_connected"])
-    mx      = _stats["mx_balance"]
-    mx_str  = f"[green]{mx:.1f}[/]" if mx >= 10 else (f"[red]{mx:.1f}[/]" if mx >= 0 else "[dim]?[/]")
+    bybit_s  = _conn(_stats["bybit_connected"])
+    bitget_s = _conn(_stats["bitget_connected"])
 
     def _bal_str(v: float) -> str:
         return f"[yellow]${v:.0f}[/]" if v >= 0 else "[dim]?[/]"
@@ -154,19 +153,23 @@ def build_ui() -> Layout:
         diff = current - start
         return f" {_pnl_str(diff, 0)}"
 
-    by_r = _r_str(_stats["bybit_usdt"], _stats["bybit_usdt_start"])
-    mx_r = _r_str(_stats["mexc_usdt"],  _stats["mexc_usdt_start"])
+    by_r     = _r_str(_stats["bybit_usdt"],  _stats["bybit_usdt_start"])
+    bitget_r = _r_str(_stats["bitget_usdt"], _stats["bitget_usdt_start"])
 
     rpnl = _portfolio["realized_pnl"]
     upnl = _portfolio["unrealized_pnl"]
-    pause_str = "  [bold red]⏸ ПАУЗА[/]" if _paused else ""
+    if _auto_paused:
+        pause_str = "  [bold yellow]⏸ НЕТ БАЛАНСА[/]"
+    elif _paused:
+        pause_str = "  [bold red]⏸ ПАУЗА[/]"
+    else:
+        pause_str = ""
 
     layout["header"].update(Panel(
         Text.from_markup(
             f"[bold cyan]◈ REAL TRADING[/]  Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
-            f"MEXC[dim]spot[/]: {mexc_s} {_bal_str(_stats['mexc_usdt'])}{mx_r}  │  "
+            f"Bitget: {bitget_s} {_bal_str(_stats['bitget_usdt'])}{bitget_r}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
-            f"MX: {mx_str}  "
             f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
             f"{pause_str}"
         ),
@@ -289,7 +292,7 @@ def build_ui() -> Layout:
 
     layout["spreads"].update(Panel(
         tbl,
-        title="[bold]Bybit Linear  ↔  MEXC Futures  │  x1 leverage[/]",
+        title="[bold]Bybit Linear  ↔  Bitget Futures  │  x1 leverage[/]",
         subtitle=f"[dim]порог >{FEE_BPS} bps  │  топ 5 из {len(_spread_map)}[/]",
     ))
 
@@ -315,7 +318,7 @@ def _bybit_qty(sym: str, size_usdt: float, price: float) -> float:
 async def bot_main_real(symbols: list[str]) -> None:
     from core.models import Exchange, MarketType, OrderSide, OrderType
     from exchanges.bybit.adapter import BybitAdapter
-    from exchanges.mexc.hybrid_adapter_real import MexcHybridAdapterReal
+    from exchanges.bitget.adapter_real import BitgetAdapterReal
     from orderbook.engine import OrderBookEngine
     from spread.calculator import SpreadCalculator
     from spread.fees import FeeSchedule, FeeTable
@@ -325,22 +328,23 @@ async def bot_main_real(symbols: list[str]) -> None:
         api_key    = os.environ.get("BYBIT_API_KEY", ""),
         api_secret = os.environ.get("BYBIT_API_SECRET", ""),
     )
-    mexc_creds = ExchangeCredentials(
-        api_key    = os.environ.get("MEXC_API_KEY", ""),
-        api_secret = os.environ.get("MEXC_API_SECRET", ""),
+    bitget_creds = ExchangeCredentials(
+        api_key    = os.environ.get("BITGET_API_KEY", ""),
+        api_secret = os.environ.get("BITGET_API_SECRET", ""),
     )
+    bitget_pass = os.environ.get("BITGET_PASSPHRASE", "")
 
     bybit_cfg = {"testnet": False, "rate_limit": {"requests_per_second": 10, "orders_per_second": 5}}
-    bybit = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
-    mexc  = MexcHybridAdapterReal(credentials=mexc_creds)
+    bybit  = BybitAdapter(config=bybit_cfg, credentials=bybit_creds)
+    bitget = BitgetAdapterReal(credentials=bitget_creds, passphrase=bitget_pass)
 
     ob_engine = OrderBookEngine(validate_checksum=False)
     bybit.on_orderbook(ob_engine.handle)
-    mexc.on_orderbook(ob_engine.handle)
+    bitget.on_orderbook(ob_engine.handle)
 
     fee_table = FeeTable(overrides={
-        (Exchange.MEXC,  MarketType.SPOT):      FeeSchedule(maker_bps=0.0,  taker_bps=1.0),  # с MX токеном
-        (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
+        (Exchange.BITGET, MarketType.PERPETUAL): FeeSchedule(maker_bps=2.0, taker_bps=6.0),
+        (Exchange.BYBIT,  MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
     })
     calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
 
@@ -352,9 +356,9 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.BUY, OrderType.MARKET, qty)
             return order.id, qty
-        else:  # mexc
-            order = await mexc.open_long(sym, VIRTUAL_SIZE_USDT, price)
-            return order.id, order.qty  # qty = vol (контракты)
+        else:  # bitget
+            order = await bitget.open_long(sym, VIRTUAL_SIZE_USDT, price)
+            return order.id, order.qty
 
     async def _do_open_short(exchange: str, sym: str, price: float) -> tuple:
         """Открыть шорт. Возвращает (order_id, qty_for_close)."""
@@ -363,8 +367,8 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.SELL, OrderType.MARKET, qty)
             return order.id, qty
-        else:  # mexc
-            order = await mexc.open_short(sym, VIRTUAL_SIZE_USDT, price)
+        else:  # bitget
+            order = await bitget.open_short(sym, VIRTUAL_SIZE_USDT, price)
             return order.id, order.qty
 
     async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> None:
@@ -373,7 +377,7 @@ async def bot_main_real(symbols: list[str]) -> None:
             await bybit.place_order(sym, MarketType.PERPETUAL,
                                     OrderSide.SELL, OrderType.MARKET, qty)
         else:
-            await mexc.close_long(sym, qty, price)
+            await bitget.close_long(sym, qty, price)
 
     async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> None:
         """Закрыть шорт."""
@@ -381,17 +385,15 @@ async def bot_main_real(symbols: list[str]) -> None:
             await bybit.place_order(sym, MarketType.PERPETUAL,
                                     OrderSide.BUY, OrderType.MARKET, qty)
         else:
-            await mexc.close_short(sym, qty, price)
+            await bitget.close_short(sym, qty, price)
 
     async def _on_book_update(updated) -> None:
         global _last_entry_at
         if not updated.is_synced or updated.is_stale:
             return
         sym      = updated.symbol
-        other_ex = Exchange.BYBIT if updated.exchange == Exchange.MEXC else Exchange.MEXC
-        # Bybit — PERPETUAL, MEXC — SPOT (разные рынки)
-        other_mt = MarketType.PERPETUAL if other_ex == Exchange.BYBIT else MarketType.SPOT
-        other    = ob_engine.get(other_ex, sym, other_mt)
+        other_ex = Exchange.BYBIT if updated.exchange == Exchange.BITGET else Exchange.BITGET
+        other    = ob_engine.get(other_ex, sym, MarketType.PERPETUAL)
         if other is None or not other.is_synced or other.is_stale:
             return
 
@@ -478,14 +480,12 @@ async def bot_main_real(symbols: list[str]) -> None:
 
             elif not _paused:
                 # ── Вход с 100мс задержкой ───────────────────────────────
-                # sell_b.exchange != MEXC: спот не даёт шортить без маржи
                 if (ep > ENTRY_THRESHOLD
                         and len(_positions) < MAX_POSITIONS
                         and sym not in _BLACKLIST
                         and _cooldown.get(sym, 0) < now_mono
                         and key not in _pending_entries
-                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S
-                        and sell_b.exchange != Exchange.MEXC):
+                        and now_mono - _last_entry_at >= MIN_ENTRY_INTERVAL_S):
 
                     spread_entry = _spread_map.get(key)
                     reaction_ms = int((now_mono - spread_entry["_first_seen_ts"]) * 1000) if spread_entry else 0
@@ -581,8 +581,6 @@ async def bot_main_real(symbols: list[str]) -> None:
     async def _fetch_exchange_balances() -> None:
         by_key = bybit_creds.api_key
         by_sec = bybit_creds.api_secret
-        mx_key = mexc_creds.api_key
-        mx_sec = mexc_creds.api_secret
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
             if by_key and by_sec:
                 for acct in ("UNIFIED", "CONTRACT"):
@@ -608,49 +606,16 @@ async def bot_main_real(symbols: list[str]) -> None:
                             break
                     except Exception:
                         pass
-            if mx_key and mx_sec:
-                try:
-                    ts     = str(int(time.time() * 1000))
-                    params = f"timestamp={ts}"
-                    sig    = hmac.new(mx_sec.encode(), params.encode(), hashlib.sha256).hexdigest()
-                    async with s.get(
-                        f"https://api.mexc.com/api/v3/account?{params}&signature={sig}",
-                        headers={"X-MEXC-APIKEY": mx_key},
-                    ) as r:
-                        data = await r.json(content_type=None)
-                    for b in data.get("balances", []):
-                        if b.get("asset") == "USDT":
-                            val = float(b.get("free", 0)) + float(b.get("locked", 0))
-                            _stats["mexc_usdt"] = val
-                            if _stats["mexc_usdt_start"] < 0:
-                                _stats["mexc_usdt_start"] = val
-                            break
-                except Exception:
-                    pass
-
-    async def _fetch_mx_balance() -> None:
-        api_key    = mexc_creds.api_key
-        api_secret = mexc_creds.api_secret
-        if not api_key or not api_secret:
-            return
         try:
-            ts     = str(int(time.time() * 1000))
-            params = f"timestamp={ts}"
-            sig    = hmac.new(api_secret.encode(), params.encode(), hashlib.sha256).hexdigest()
-            url    = f"https://api.mexc.com/api/v3/account?{params}&signature={sig}"
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
-                async with s.get(url, headers={"X-MEXC-APIKEY": api_key}) as r:
-                    data = await r.json(content_type=None)
-            for b in data.get("balances", []):
-                if b["asset"] == "MX":
-                    _stats["mx_balance"] = float(b.get("free", 0)) + float(b.get("locked", 0))
-                    return
-            _stats["mx_balance"] = 0.0
+            val = await bitget._rest.get_usdt_balance()
+            _stats["bitget_usdt"] = val
+            if _stats["bitget_usdt_start"] < 0:
+                _stats["bitget_usdt_start"] = val
         except Exception:
             pass
 
     async def _stats_loop() -> None:
-        _mx_fetch_t   = [0.0]
+        _bal_fetch_t  = [0.0]
         _cfg_reload_t = [0.0]
         while True:
             await asyncio.sleep(1)
@@ -664,26 +629,38 @@ async def bot_main_real(symbols: list[str]) -> None:
             for k in stale_keys:
                 del _spread_map[k]
 
-            _stats["bybit_connected"] = bybit.health.ws_connected
-            _stats["mexc_connected"]  = mexc.health.ws_connected
+            _stats["bybit_connected"]  = bybit.health.ws_connected
+            _stats["bitget_connected"] = bitget.health.ws_connected
 
             _portfolio["unrealized_pnl"] = round(sum(
                 VIRTUAL_SIZE_USDT * (pos["entry_executable_bps"] - _spread_map[k]["executable_spread_bps"]) / 10_000
                 for k, pos in _positions.items() if k in _spread_map
             ), 2)
 
-            if now - _mx_fetch_t[0] > 60:
-                _mx_fetch_t[0] = now
-                asyncio.create_task(_fetch_mx_balance())
+            if now - _bal_fetch_t[0] > 60:
+                _bal_fetch_t[0] = now
                 asyncio.create_task(_fetch_exchange_balances())
+
+            # Авто-пауза если баланс ещё не загружен или недостаточен
+            global _paused, _auto_paused
+            bybit_ok  = _stats["bybit_usdt"]  >= VIRTUAL_SIZE_USDT
+            bitget_ok = _stats["bitget_usdt"] >= VIRTUAL_SIZE_USDT
+            if not (bybit_ok and bitget_ok):
+                if not _paused:
+                    _paused = True
+                    _auto_paused = True
+            else:
+                if _auto_paused:
+                    _paused = False
+                    _auto_paused = False
 
     await _load_bybit_instruments()
     await bybit.connect()
-    await mexc.connect()
+    await bitget.connect()
 
     for sym in symbols:
         await bybit.subscribe_orderbook(sym, MarketType.PERPETUAL)
-        await mexc.subscribe_orderbook(sym, MarketType.SPOT)
+        await bitget.subscribe_orderbook(sym, MarketType.PERPETUAL)
 
     await _stats_loop()
 
@@ -728,6 +705,7 @@ async def _key_task() -> None:
                     elif ch3 == b"5":
                         _trades_page = (_trades_page - 1) % n_pages
             elif ch in (b"p", b"P"):
+                _auto_paused = False
                 _paused = not _paused
             elif ch in (b"q", b"Q", b"\x03"):
                 import os as _os
