@@ -222,7 +222,6 @@ def build_ui() -> Layout:
     hist_tbl.add_column("Выход bps", justify="right", width=10)
     hist_tbl.add_column("P&L bps",   justify="right", width=9)
     hist_tbl.add_column("P&L $",     justify="right", width=9)
-    hist_tbl.add_column("Комса $",   justify="right", width=8)
     hist_tbl.add_column("Причина",   width=10)
     hist_tbl.add_column("Статус",    width=10)
     hist_tbl.add_column("Держал",    justify="right", width=8)
@@ -245,7 +244,6 @@ def build_ui() -> Layout:
             f"{t['exit_bps']:+.2f}",
             _pnl_str(t["pnl_bps"], 2),
             _pnl_str(t["pnl_usdt"], 2),
-            f"[dim]-{t.get('fee_usdt', 0.0):.2f}[/]",
             reason_str, status_str,
             t["hold"],
             t["time"],
@@ -456,7 +454,6 @@ async def bot_main_real(symbols: list[str]) -> None:
 
                     pnl_bps  = entry_ep - ep - FEE_BPS
                     pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 2)
-                    fee_usdt = round(VIRTUAL_SIZE_USDT * FEE_BPS / 10_000, 2)
                     _portfolio["realized_pnl"] += pnl_usdt
                     hold_ms = int(hold_mono * 1000)
 
@@ -466,7 +463,6 @@ async def bot_main_real(symbols: list[str]) -> None:
                         "exit_bps":     ep,
                         "pnl_bps":      round(pnl_bps, 2),
                         "pnl_usdt":     pnl_usdt,
-                        "fee_usdt":     fee_usdt,
                         "hold":         _hold_str(hold_ms),
                         "close_reason": close_reason,
                         "order_status": order_status,
