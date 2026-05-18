@@ -109,6 +109,20 @@ class BybitRestClient:
             exchange_order_id=result.get("orderId", ""),
         )
 
+    async def set_leverage(self, symbol: str, leverage: int = 1) -> None:
+        try:
+            await self._post("/v5/position/set-leverage", {
+                "category": "linear",
+                "symbol": symbol,
+                "buyLeverage": str(leverage),
+                "sellLeverage": str(leverage),
+            }, signed=True)
+        except RuntimeError as e:
+            if "leverage not modified" in str(e).lower() or "110043" in str(e):
+                pass  # уже стоит нужное плечо
+            else:
+                logger.warning("set_leverage failed", symbol=symbol, error=str(e))
+
     async def cancel_order(self, symbol: str, order_id: str, market_type: MarketType) -> None:
         await self._rl.orders.acquire()
         category = _market_type_to_category(market_type)

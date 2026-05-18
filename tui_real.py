@@ -679,6 +679,7 @@ async def bot_main_real(symbols: list[str]) -> None:
     await mexc.connect()
 
     for sym in symbols:
+        await bybit._rest.set_leverage(sym, leverage=1)
         await bybit.subscribe_orderbook(sym, MarketType.PERPETUAL)
         await mexc.subscribe_orderbook(sym, MarketType.SPOT)
 
