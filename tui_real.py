@@ -152,13 +152,11 @@ def build_ui() -> Layout:
         if current < 0 or start < 0:
             return ""
         diff = current - start
-        return f" {_pnl_str(diff, 0)}"
+        return f" R:{_pnl_str(diff, 2)}"
 
     by_r = _r_str(_stats["bybit_usdt"], _stats["bybit_usdt_start"])
     mx_r = _r_str(_stats["mexc_usdt"],  _stats["mexc_usdt_start"])
 
-    rpnl = _portfolio["realized_pnl"]
-    upnl = _portfolio["unrealized_pnl"]
     pause_str = "  [bold red]⏸ ПАУЗА[/]" if _paused else ""
 
     layout["header"].update(Panel(
@@ -166,8 +164,7 @@ def build_ui() -> Layout:
             f"[bold cyan]◈ REAL TRADING[/]  Bybit: {bybit_s} {_bal_str(_stats['bybit_usdt'])}{by_r}  "
             f"MEXC[dim]spot[/]: {mexc_s} {_bal_str(_stats['mexc_usdt'])}{mx_r}  │  "
             f"Пар: [yellow]{_stats['pairs']}[/]  Up: [dim]{_uptime()}[/]  │  "
-            f"MX: {mx_str}  "
-            f"Сессия: R:{_pnl_str(rpnl)}  U:{_pnl_str(upnl)}"
+            f"MX: {mx_str}"
             f"{pause_str}"
         ),
         style="on grey7",
