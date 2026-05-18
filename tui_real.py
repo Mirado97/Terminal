@@ -669,7 +669,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                 for k, pos in _positions.items() if k in _spread_map
             ), 2)
 
-            if now - _mx_fetch_t[0] > 60:
+            if now - _mx_fetch_t[0] > 2:
                 _mx_fetch_t[0] = now
                 asyncio.create_task(_fetch_mx_balance())
                 asyncio.create_task(_fetch_exchange_balances())
