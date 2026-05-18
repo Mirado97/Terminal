@@ -101,14 +101,9 @@ class MexcSpotRestClient:
             qs.encode(),
             hashlib.sha256,
         ).hexdigest()
-        body = f"{qs}&signature={sig}".encode()
         async with self._session.post(
-            f"{BASE_URL}{path}",
-            data=body,
-            headers={
-                "X-MEXC-APIKEY": self._creds.api_key,
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
+            f"{BASE_URL}{path}?{qs}&signature={sig}",
+            headers={"X-MEXC-APIKEY": self._creds.api_key},
         ) as r:
             return await self._handle(r)
 
