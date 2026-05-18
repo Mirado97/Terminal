@@ -462,9 +462,11 @@ async def bot_main_real(symbols: list[str]) -> None:
                     # Реальные комиссии с бирж
                     bybit_oid  = close_short_id if sell_ex == "bybit" else close_long_id
                     mexc_oid   = close_long_id  if buy_ex  == "mexc"  else close_short_id
+                    async def _zero() -> float:
+                        return 0.0
                     bybit_fee, mexc_fee = await asyncio.gather(
-                        bybit._rest.get_execution_fee(sym, bybit_oid) if bybit_oid else asyncio.coroutine(lambda: 0.0)(),
-                        mexc._rest.get_trade_fee(sym, mexc_oid)       if mexc_oid  else asyncio.coroutine(lambda: 0.0)(),
+                        bybit._rest.get_execution_fee(sym, bybit_oid) if bybit_oid else _zero(),
+                        mexc._rest.get_trade_fee(sym, mexc_oid)       if mexc_oid  else _zero(),
                         return_exceptions=True,
                     )
                     bybit_fee = bybit_fee if isinstance(bybit_fee, float) else 0.0
