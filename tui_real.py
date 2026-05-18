@@ -219,6 +219,9 @@ def build_ui() -> Layout:
     hist_tbl.add_column("Выход bps", justify="right", width=10)
     hist_tbl.add_column("P&L bps",   justify="right", width=9)
     hist_tbl.add_column("P&L $",     justify="right", width=9)
+    hist_tbl.add_column("Bybit $",   justify="right", width=8)
+    hist_tbl.add_column("MEXC $",    justify="right", width=8)
+    hist_tbl.add_column("Комса $",   justify="right", width=8)
     hist_tbl.add_column("Причина",   width=10)
     hist_tbl.add_column("Статус",    width=10)
     hist_tbl.add_column("Держал",    justify="right", width=8)
@@ -241,6 +244,9 @@ def build_ui() -> Layout:
             f"{t['exit_bps']:+.2f}",
             _pnl_str(t["pnl_bps"], 2),
             _pnl_str(t["pnl_usdt"], 2),
+            f"[dim]-{t.get('bybit_fee', 0.0):.4f}[/]",
+            f"[dim]-{t.get('mexc_fee',  0.0):.4f}[/]",
+            f"[dim]-{t.get('total_fee', 0.0):.4f}[/]",
             reason_str, status_str,
             t["hold"],
             t["time"],
@@ -364,21 +370,25 @@ async def bot_main_real(symbols: list[str]) -> None:
             order = await mexc.open_short(sym, VIRTUAL_SIZE_USDT, price)
             return order.id, order.qty
 
-    async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> None:
-        """Закрыть лонг."""
+    async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> str:
+        """Закрыть лонг. Возвращает order_id."""
         if exchange == "bybit":
-            await bybit.place_order(sym, MarketType.PERPETUAL,
-                                    OrderSide.SELL, OrderType.MARKET, qty)
+            order = await bybit.place_order(sym, MarketType.PERPETUAL,
+                                            OrderSide.SELL, OrderType.MARKET, qty)
+            return order.id
         else:
-            await mexc.close_long(sym, qty, price)
+            order = await mexc.close_long(sym, qty, price)
+            return order.id
 
-    async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> None:
-        """Закрыть шорт."""
+    async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> str:
+        """Закрыть шорт. Возвращает order_id."""
         if exchange == "bybit":
-            await bybit.place_order(sym, MarketType.PERPETUAL,
-                                    OrderSide.BUY, OrderType.MARKET, qty)
+            order = await bybit.place_order(sym, MarketType.PERPETUAL,
+                                            OrderSide.BUY, OrderType.MARKET, qty)
+            return order.id
         else:
-            await mexc.close_short(sym, qty, price)
+            order = await mexc.close_short(sym, qty, price)
+            return order.id
 
     async def _on_book_update(updated) -> None:
         global _last_entry_at
@@ -439,15 +449,27 @@ async def bot_main_real(symbols: list[str]) -> None:
                     cur_sell = sell_b.best_ask if sell_b.exchange.value == sell_ex else buy_b.best_ask
 
                     order_status = "ok"
+                    close_long_id = close_short_id = ""
                     try:
-                        await _do_close_long(buy_ex,  sym, pos["buy_qty"],  cur_buy)
-                        await _do_close_short(sell_ex, sym, pos["sell_qty"], cur_sell)
+                        close_long_id  = await _do_close_long(buy_ex,  sym, pos["buy_qty"],  cur_buy)
+                        close_short_id = await _do_close_short(sell_ex, sym, pos["sell_qty"], cur_sell)
                     except Exception as e:
                         order_status = "err"
-                        # Логируем — трейдер должен проверить позиции вручную
                         log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                         with open(log_file, "a") as f:
                             f.write(f"{time.strftime('%H:%M:%S')} CLOSE ERROR {sym}: {e}\n")
+
+                    # Реальные комиссии с бирж
+                    bybit_oid  = close_short_id if sell_ex == "bybit" else close_long_id
+                    mexc_oid   = close_long_id  if buy_ex  == "mexc"  else close_short_id
+                    bybit_fee, mexc_fee = await asyncio.gather(
+                        bybit._rest.get_execution_fee(sym, bybit_oid) if bybit_oid else asyncio.coroutine(lambda: 0.0)(),
+                        mexc._rest.get_trade_fee(sym, mexc_oid)       if mexc_oid  else asyncio.coroutine(lambda: 0.0)(),
+                        return_exceptions=True,
+                    )
+                    bybit_fee = bybit_fee if isinstance(bybit_fee, float) else 0.0
+                    mexc_fee  = mexc_fee  if isinstance(mexc_fee,  float) else 0.0
+                    total_fee = round(bybit_fee + mexc_fee, 4)
 
                     pnl_bps  = entry_ep - ep - FEE_BPS
                     pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 2)
@@ -460,6 +482,9 @@ async def bot_main_real(symbols: list[str]) -> None:
                         "exit_bps":     ep,
                         "pnl_bps":      round(pnl_bps, 2),
                         "pnl_usdt":     pnl_usdt,
+                        "bybit_fee":    bybit_fee,
+                        "mexc_fee":     mexc_fee,
+                        "total_fee":    total_fee,
                         "hold":         _hold_str(hold_ms),
                         "close_reason": close_reason,
                         "order_status": order_status,

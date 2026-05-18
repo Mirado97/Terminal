@@ -85,6 +85,24 @@ class MexcSpotRestClient:
             created_at_ms=int(time.time() * 1000),
         )
 
+    async def get_trade_fee(self, symbol: str, order_id: str) -> float:
+        """Вернуть реальную комиссию по orderId в USDT."""
+        try:
+            assert self._session
+            params = {"symbol": symbol, "orderId": order_id, "timestamp": str(int(time.time() * 1000))}
+            qs  = "&".join(f"{k}={v}" for k, v in params.items())
+            sig = hmac.new(self._creds.api_secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
+            async with self._session.get(
+                f"{BASE_URL}/api/v3/myTrades?{qs}&signature={sig}",
+                headers={"X-MEXC-APIKEY": self._creds.api_key},
+            ) as r:
+                data = orjson.loads(await r.read())
+            if isinstance(data, list):
+                return round(sum(float(t.get("commission", 0)) for t in data), 6)
+        except Exception:
+            pass
+        return 0.0
+
     async def get_token_balance(self, asset: str) -> float:
         """Вернуть свободный баланс токена на споте."""
         assert self._session

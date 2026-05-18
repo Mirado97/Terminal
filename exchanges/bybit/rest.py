@@ -109,6 +109,20 @@ class BybitRestClient:
             exchange_order_id=result.get("orderId", ""),
         )
 
+    async def get_execution_fee(self, symbol: str, order_id: str) -> float:
+        """Вернуть реальную комиссию по orderId в USDT."""
+        try:
+            data = await self._get("/v5/execution/list", {
+                "category": "linear",
+                "symbol": symbol,
+                "orderId": order_id,
+                "limit": "10",
+            }, signed=True)
+            total = sum(float(e.get("execFee", 0)) for e in data.get("result", {}).get("list", []))
+            return round(total, 6)
+        except Exception:
+            return 0.0
+
     async def set_leverage(self, symbol: str, leverage: int = 1) -> None:
         try:
             await self._post("/v5/position/set-leverage", {
