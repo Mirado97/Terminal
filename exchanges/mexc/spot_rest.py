@@ -103,7 +103,11 @@ class MexcSpotRestClient:
         ).hexdigest()
         async with self._session.post(
             f"{BASE_URL}{path}?{qs}&signature={sig}",
-            headers={"X-MEXC-APIKEY": self._creds.api_key},
+            data=b"",
+            headers={
+                "X-MEXC-APIKEY": self._creds.api_key,
+                "Content-Type": "application/json",
+            },
         ) as r:
             return await self._handle(r)
 
