@@ -748,7 +748,8 @@ async def main() -> None:
     setup_logging(level="ERROR", json_output=False)
 
     from run import fetch_futures_symbols
-    symbols = await fetch_futures_symbols(500)
+    import config as _cfg
+    symbols = await fetch_futures_symbols(500, min_mexc_volume=getattr(_cfg, "MIN_MEXC_VOLUME_USDT", 500_000))
     _stats["pairs"] = len(symbols)
 
     bot_task = asyncio.create_task(bot_main_real(symbols))

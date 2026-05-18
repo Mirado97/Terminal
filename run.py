@@ -54,8 +54,8 @@ _FALLBACK_SYMBOLS = [
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 
-async def fetch_futures_symbols(n: int = 500) -> list[str]:
-    """Топ N USDT-пар по объёму, доступных на Bybit Linear И Bitget Futures."""
+async def fetch_futures_symbols(n: int = 500, min_mexc_volume: float = 500_000) -> list[str]:
+    """Топ N USDT-пар по объёму, доступных на Bybit Linear И MEXC Spot с объёмом > min_mexc_volume."""
     headers = {"User-Agent": _UA}
     try:
         async with aiohttp.ClientSession(
@@ -74,23 +74,22 @@ async def fetch_futures_symbols(n: int = 500) -> list[str]:
                 if sym.endswith("USDT"):
                     bybit_tickers[sym] = float(t.get("turnover24h", 0) or 0)
 
-            # Bitget Futures USDT
-            async with session.get(
-                "https://api.bitget.com/api/v2/mix/market/contracts?productType=USDT-FUTURES"
-            ) as r:
-                bitget_data = await r.json(content_type=None)
+            # MEXC Spot — объём за 24ч
+            async with session.get("https://api.mexc.com/api/v3/ticker/24hr") as r:
+                mexc_data = await r.json(content_type=None)
 
-        bitget_symbols: set[str] = set()
-        for c in bitget_data.get("data", []):
-            sym = c.get("symbol", "")
-            if sym.endswith("USDT"):
-                bitget_symbols.add(sym)
+        mexc_symbols: set[str] = set()
+        for t in mexc_data if isinstance(mexc_data, list) else []:
+            sym = t.get("symbol", "")
+            vol = float(t.get("quoteVolume", 0) or 0)
+            if sym.endswith("USDT") and vol >= min_mexc_volume:
+                mexc_symbols.add(sym)
 
-        # Пересечение, сортировка по объёму Bybit
-        common = {s: v for s, v in bybit_tickers.items() if s in bitget_symbols}
+        # Пересечение Bybit ∩ MEXC Spot, сортировка по объёму Bybit
+        common = {s: v for s, v in bybit_tickers.items() if s in mexc_symbols}
         symbols = [s for s in sorted(common, key=lambda s: common[s], reverse=True)
                    if s not in _BLACKLIST][:n]
-        print(f"  Загружено {len(symbols)} фьюч. пар (Bybit Linear ∩ Bitget Futures)")
+        print(f"  Загружено {len(symbols)} пар (Bybit Linear ∩ MEXC Spot >{min_mexc_volume/1_000:.0f}k vol)")
         return symbols
 
     except Exception as exc:
