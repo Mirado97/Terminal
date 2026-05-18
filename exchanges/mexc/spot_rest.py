@@ -22,6 +22,7 @@ class MexcSpotRestClient:
     def __init__(self, credentials: ExchangeCredentials) -> None:
         self._creds = credentials
         self._session: aiohttp.ClientSession | None = None
+        self._precision_cache: dict[str, int] = {}  # symbol → decimal places
 
     async def start(self) -> None:
         self._session = aiohttp.ClientSession(
@@ -33,6 +34,21 @@ class MexcSpotRestClient:
     async def stop(self) -> None:
         if self._session:
             await self._session.close()
+
+    async def _get_base_precision(self, symbol: str) -> int:
+        """Получить кол-во знаков после запятой для базового актива."""
+        if symbol in self._precision_cache:
+            return self._precision_cache[symbol]
+        assert self._session
+        async with self._session.get(
+            f"{BASE_URL}/api/v3/exchangeInfo",
+            params={"symbol": symbol},
+        ) as r:
+            data = orjson.loads(await r.read())
+        symbols = data.get("symbols", [])
+        precision = int(symbols[0]["baseAssetPrecision"]) if symbols else 8
+        self._precision_cache[symbol] = precision
+        return precision
 
     async def buy_market(self, symbol: str, usdt_amount: float) -> Order:
         """Потратить usdt_amount USDT → получить токены."""
@@ -51,7 +67,8 @@ class MexcSpotRestClient:
             # считаем из цены исполнения
             price_f = float(data.get("price") or 0)
             if price_f > 0:
-                token_qty = usdt_amount / price_f
+                precision = await self._get_base_precision(symbol)
+                token_qty = round(usdt_amount / price_f, precision)
         if token_qty <= 0:
             raise RuntimeError(f"MEXC Spot: не удалось получить qty из ответа: {data}")
         return Order(
@@ -70,11 +87,13 @@ class MexcSpotRestClient:
 
     async def sell_market(self, symbol: str, token_qty: float) -> Order:
         """Продать token_qty токенов → получить USDT."""
+        precision = await self._get_base_precision(symbol)
+        qty_str = f"{token_qty:.{precision}f}"
         params = {
             "symbol": symbol,
             "side": "SELL",
             "type": "MARKET",
-            "quantity": f"{token_qty:.8f}".rstrip("0").rstrip("."),
+            "quantity": qty_str,
             "newClientOrderId": f"arb-{uuid.uuid4().hex[:12]}",
             "timestamp": str(int(time.time() * 1000)),
         }
