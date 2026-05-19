@@ -526,7 +526,6 @@ async def bot_main_real(symbols: list[str]) -> None:
                         _buy_ex=buy_b.exchange.value, _sell_ex=sell_b.exchange.value,
                         _reaction=reaction_ms,
                     ) -> None:
-                        await asyncio.sleep(0.1)
                         _pending_entries.discard(_key)
                         if _key in _positions or len(_positions) >= MAX_POSITIONS:
                             return
@@ -538,30 +537,38 @@ async def bot_main_real(symbols: list[str]) -> None:
                         buy_price  = current.get("buy_price",  0.0)
                         sell_price = current.get("sell_price", 0.0)
 
-                        # Открываем лонг
-                        try:
-                            buy_id, buy_qty, buy_fill = await _do_open_long(_buy_ex, _sym, buy_price)
-                        except Exception as e:
-                            _cooldown[_sym] = time.monotonic() + 60
-                            log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
-                            with open(log_file, "a") as f:
-                                f.write(f"{time.strftime('%H:%M:%S')} OPEN LONG ERROR {_sym}: {e}\n")
-                            return
+                        # Открываем обе ноги одновременно
+                        long_res, short_res = await asyncio.gather(
+                            _do_open_long(_buy_ex,   _sym, buy_price),
+                            _do_open_short(_sell_ex, _sym, sell_price),
+                            return_exceptions=True,
+                        )
 
-                        # Открываем шорт
-                        try:
-                            sell_id, sell_qty, sell_fill = await _do_open_short(_sell_ex, _sym, sell_price)
-                        except Exception as e:
+                        err_log = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
+                        if isinstance(long_res, Exception):
                             _cooldown[_sym] = time.monotonic() + 60
-                            log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
-                            with open(log_file, "a") as f:
-                                f.write(f"{time.strftime('%H:%M:%S')} OPEN SHORT ERROR {_sym}: {e}\n")
-                            # Закрываем уже открытый лонг
+                            with open(err_log, "a") as f:
+                                f.write(f"{time.strftime('%H:%M:%S')} OPEN LONG ERROR {_sym}: {long_res}\n")
+                            if not isinstance(short_res, Exception):
+                                _, sq, _ = short_res
+                                try:
+                                    await _do_close_short(_sell_ex, _sym, sq, sell_price)
+                                except Exception:
+                                    pass
+                            return
+                        if isinstance(short_res, Exception):
+                            _cooldown[_sym] = time.monotonic() + 60
+                            with open(err_log, "a") as f:
+                                f.write(f"{time.strftime('%H:%M:%S')} OPEN SHORT ERROR {_sym}: {short_res}\n")
+                            _, bq, _ = long_res
                             try:
-                                await _do_close_long(_buy_ex, _sym, buy_qty, buy_price)
+                                await _do_close_long(_buy_ex, _sym, bq, buy_price)
                             except Exception:
                                 pass
                             return
+
+                        buy_id, buy_qty, buy_fill   = long_res
+                        sell_id, sell_qty, sell_fill = short_res
 
                         fill_log = LOG_DIR / f"fills_{time.strftime('%Y-%m-%d')}.log"
                         with open(fill_log, "a") as f:
