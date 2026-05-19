@@ -342,10 +342,11 @@ async def bot_main_real(symbols: list[str]) -> None:
     mexc.on_orderbook(ob_engine.handle)
 
     fee_table = FeeTable(overrides={
-        (Exchange.MEXC,  MarketType.SPOT):      FeeSchedule(maker_bps=0.0,  taker_bps=1.0),  # с MX токеном
-        (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=3.24, taker_bps=9.0),
+        (Exchange.MEXC,  MarketType.SPOT):      FeeSchedule(maker_bps=0.0, taker_bps=5.0),   # 0.05% реальная комиссия
+        (Exchange.BYBIT, MarketType.PERPETUAL): FeeSchedule(maker_bps=2.0, taker_bps=5.5),   # 0.055%
     })
-    calculator = SpreadCalculator(fee_table=fee_table, latency_us=10_000)
+    # latency_us: 250ms — задержка MEXC REST поллера + ~10ms исполнение
+    calculator = SpreadCalculator(fee_table=fee_table, latency_us=260_000)
 
     # Хелперы для размещения ордеров на нужной бирже
     async def _do_open_long(exchange: str, sym: str, price: float) -> tuple:

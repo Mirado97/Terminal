@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from core.models import SpreadOpportunity
+from core.models import Exchange, MarketType, SpreadOpportunity
 from orderbook.book import LocalOrderBook
 from spread.fees import FeeTable
 
@@ -101,6 +101,13 @@ class SpreadCalculator:
 
         buy_slippage_bps = max(0.0, (buy_avg - buy_price) / mid * 10_000)
         sell_slippage_bps = max(0.0, (sell_price - sell_avg) / mid * 10_000)
+
+        # MEXC Spot: bookTicker не содержит глубины стакана — добавляем
+        # консервативный буфер на market order slippage (исходя из наблюдаемых ~30 bps)
+        if buy_book.exchange == Exchange.MEXC and buy_book.market_type == MarketType.SPOT:
+            buy_slippage_bps += 30.0
+        if sell_book.exchange == Exchange.MEXC and sell_book.market_type == MarketType.SPOT:
+            sell_slippage_bps += 30.0
         net_spread_bps = effective_spread_bps - buy_slippage_bps - sell_slippage_bps
 
         # 4. Latency cost
