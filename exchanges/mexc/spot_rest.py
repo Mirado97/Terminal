@@ -62,15 +62,15 @@ class MexcSpotRestClient:
         }
         data = await self._signed_post("/api/v3/order", params)
         token_qty = float(data.get("executedQty") or 0)
+        cq = float(data.get("cummulativeQuoteQty") or 0)
         if token_qty <= 0:
-            # MEXC не возвращает executedQty для market+quoteOrderQty
-            # считаем из цены исполнения
             price_f = float(data.get("price") or 0)
             if price_f > 0:
                 precision = await self._get_base_precision(symbol)
                 token_qty = round(usdt_amount / price_f, precision)
         if token_qty <= 0:
             raise RuntimeError(f"MEXC Spot: не удалось получить qty из ответа: {data}")
+        fill_price = round(cq / token_qty, 8) if token_qty > 0 and cq > 0 else 0.0
         return Order(
             id=str(data.get("orderId", "")),
             client_order_id=params["newClientOrderId"],
@@ -80,8 +80,9 @@ class MexcSpotRestClient:
             side=OrderSide.BUY,
             order_type=OrderType.MARKET,
             status=OrderStatus.FILLED,
-            price=0.0,
+            price=fill_price,
             qty=token_qty,
+            avg_fill_price=fill_price,
             created_at_ms=int(time.time() * 1000),
         )
 
@@ -137,6 +138,9 @@ class MexcSpotRestClient:
             "timestamp": str(int(time.time() * 1000)),
         }
         data = await self._signed_post("/api/v3/order", params)
+        cq = float(data.get("cummulativeQuoteQty") or 0)
+        eq = float(data.get("executedQty") or token_qty)
+        fill_price = round(cq / eq, 8) if eq > 0 and cq > 0 else 0.0
         return Order(
             id=str(data.get("orderId", "")),
             client_order_id=params["newClientOrderId"],
@@ -146,8 +150,9 @@ class MexcSpotRestClient:
             side=OrderSide.SELL,
             order_type=OrderType.MARKET,
             status=OrderStatus.FILLED,
-            price=0.0,
+            price=fill_price,
             qty=token_qty,
+            avg_fill_price=fill_price,
             created_at_ms=int(time.time() * 1000),
         )
 

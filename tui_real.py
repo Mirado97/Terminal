@@ -349,46 +349,50 @@ async def bot_main_real(symbols: list[str]) -> None:
 
     # Хелперы для размещения ордеров на нужной бирже
     async def _do_open_long(exchange: str, sym: str, price: float) -> tuple:
-        """Открыть лонг. Возвращает (order_id, qty_for_close)."""
+        """Открыть лонг. Возвращает (order_id, qty_for_close, fill_price)."""
         if exchange == "bybit":
             qty = _bybit_qty(sym, VIRTUAL_SIZE_USDT, price)
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.BUY, OrderType.MARKET, qty)
-            return order.id, qty
+            return order.id, qty, price
         else:  # mexc
             order = await mexc.open_long(sym, VIRTUAL_SIZE_USDT, price)
-            return order.id, order.qty  # qty = vol (контракты)
+            fill = order.avg_fill_price if order.avg_fill_price > 0 else price
+            return order.id, order.qty, fill
 
     async def _do_open_short(exchange: str, sym: str, price: float) -> tuple:
-        """Открыть шорт. Возвращает (order_id, qty_for_close)."""
+        """Открыть шорт. Возвращает (order_id, qty_for_close, fill_price)."""
         if exchange == "bybit":
             qty = _bybit_qty(sym, VIRTUAL_SIZE_USDT, price)
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.SELL, OrderType.MARKET, qty)
-            return order.id, qty
+            return order.id, qty, price
         else:  # mexc
             order = await mexc.open_short(sym, VIRTUAL_SIZE_USDT, price)
-            return order.id, order.qty
+            fill = order.avg_fill_price if order.avg_fill_price > 0 else price
+            return order.id, order.qty, fill
 
-    async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> str:
-        """Закрыть лонг. Возвращает order_id."""
+    async def _do_close_long(exchange: str, sym: str, qty: float, price: float) -> tuple:
+        """Закрыть лонг. Возвращает (order_id, fill_price)."""
         if exchange == "bybit":
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.SELL, OrderType.MARKET, qty)
-            return order.id
+            return order.id, price
         else:
             order = await mexc.close_long(sym, qty, price)
-            return order.id
+            fill = order.avg_fill_price if order.avg_fill_price > 0 else price
+            return order.id, fill
 
-    async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> str:
-        """Закрыть шорт. Возвращает order_id."""
+    async def _do_close_short(exchange: str, sym: str, qty: float, price: float) -> tuple:
+        """Закрыть шорт. Возвращает (order_id, fill_price)."""
         if exchange == "bybit":
             order = await bybit.place_order(sym, MarketType.PERPETUAL,
                                             OrderSide.BUY, OrderType.MARKET, qty)
-            return order.id
+            return order.id, price
         else:
             order = await mexc.close_short(sym, qty, price)
-            return order.id
+            fill = order.avg_fill_price if order.avg_fill_price > 0 else price
+            return order.id, fill
 
     async def _on_book_update(updated) -> None:
         global _last_entry_at
@@ -449,30 +453,30 @@ async def bot_main_real(symbols: list[str]) -> None:
                     cur_sell = sell_b.best_ask if sell_b.exchange.value == sell_ex else buy_b.best_ask
 
                     order_status = "ok"
-                    close_long_id = close_short_id = ""
+                    close_long_fill = cur_buy
+                    close_short_fill = cur_sell
                     try:
-                        close_long_id  = await _do_close_long(buy_ex,  sym, pos["buy_qty"],  cur_buy)
-                        close_short_id = await _do_close_short(sell_ex, sym, pos["sell_qty"], cur_sell)
+                        _, close_long_fill  = await _do_close_long(buy_ex,  sym, pos["buy_qty"],  cur_buy)
+                        _, close_short_fill = await _do_close_short(sell_ex, sym, pos["sell_qty"], cur_sell)
                     except Exception as e:
                         order_status = "err"
                         log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
                         with open(log_file, "a") as f:
                             f.write(f"{time.strftime('%H:%M:%S')} CLOSE ERROR {sym}: {e}\n")
 
-                    # Реальные комиссии с бирж — небольшая пауза чтобы биржи записали исполнение
-                    await asyncio.sleep(0.5)
-                    bybit_oid  = close_short_id if sell_ex == "bybit" else close_long_id
-                    mexc_oid   = close_long_id  if buy_ex  == "mexc"  else close_short_id
-                    async def _zero() -> float:
-                        return 0.0
-                    bybit_fee, mexc_fee = await asyncio.gather(
-                        bybit._rest.get_execution_fee(sym, bybit_oid) if bybit_oid else _zero(),
-                        mexc._rest.get_trade_fee(sym, mexc_oid)       if mexc_oid  else _zero(),
-                        return_exceptions=True,
-                    )
-                    bybit_fee = bybit_fee if isinstance(bybit_fee, float) else 0.0
-                    mexc_fee  = mexc_fee  if isinstance(mexc_fee,  float) else 0.0
+                    # Комиссии: открытие + закрытие на каждой бирже
+                    bybit_fee = round(VIRTUAL_SIZE_USDT * 0.001  * 2, 4)  # 0.1% × 2
+                    mexc_fee  = round(VIRTUAL_SIZE_USDT * 0.0005 * 2, 4)  # 0.05% × 2
                     total_fee = round(bybit_fee + mexc_fee, 4)
+
+                    fill_log = LOG_DIR / f"fills_{time.strftime('%Y-%m-%d')}.log"
+                    with open(fill_log, "a") as f:
+                        f.write(
+                            f"{time.strftime('%H:%M:%S')} CLOSE {sym} "
+                            f"buy_close@{close_long_fill:.6f}(signal:{cur_buy:.6f}) "
+                            f"sell_close@{close_short_fill:.6f}(signal:{cur_sell:.6f}) "
+                            f"ep={ep:.2f}bps reason={close_reason}\n"
+                        )
 
                     pnl_bps  = entry_ep - ep - FEE_BPS
                     pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 2)
@@ -536,7 +540,7 @@ async def bot_main_real(symbols: list[str]) -> None:
 
                         # Открываем лонг
                         try:
-                            buy_id, buy_qty = await _do_open_long(_buy_ex, _sym, buy_price)
+                            buy_id, buy_qty, buy_fill = await _do_open_long(_buy_ex, _sym, buy_price)
                         except Exception as e:
                             _cooldown[_sym] = time.monotonic() + 60
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
@@ -546,7 +550,7 @@ async def bot_main_real(symbols: list[str]) -> None:
 
                         # Открываем шорт
                         try:
-                            sell_id, sell_qty = await _do_open_short(_sell_ex, _sym, sell_price)
+                            sell_id, sell_qty, sell_fill = await _do_open_short(_sell_ex, _sym, sell_price)
                         except Exception as e:
                             _cooldown[_sym] = time.monotonic() + 60
                             log_file = LOG_DIR / f"real_errors_{time.strftime('%Y-%m-%d')}.log"
@@ -559,13 +563,22 @@ async def bot_main_real(symbols: list[str]) -> None:
                                 pass
                             return
 
+                        fill_log = LOG_DIR / f"fills_{time.strftime('%Y-%m-%d')}.log"
+                        with open(fill_log, "a") as f:
+                            f.write(
+                                f"{time.strftime('%H:%M:%S')} OPEN {_sym} "
+                                f"buy@{buy_fill:.6f}(signal:{buy_price:.6f}) "
+                                f"sell@{sell_fill:.6f}(signal:{sell_price:.6f}) "
+                                f"spread={actual_ep:.2f}bps\n"
+                            )
+
                         _positions[_key] = {
                             "symbol":               _sym,
                             "buy_exchange":         _buy_ex,
                             "sell_exchange":        _sell_ex,
                             "entry_executable_bps": actual_ep,
-                            "entry_buy_price":      buy_price,
-                            "entry_sell_price":     sell_price,
+                            "entry_buy_price":      buy_fill,
+                            "entry_sell_price":     sell_fill,
                             "opened_at":            time.time(),
                             "opened_at_mono":       time.monotonic(),
                             "reaction_ms":          _reaction,
