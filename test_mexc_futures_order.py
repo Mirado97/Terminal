@@ -28,7 +28,12 @@ async def post(s: aiohttp.ClientSession, key: str, sec: str, path: str, body: di
     ts  = str(int(time.time() * 1000))
     raw = orjson.dumps(body).decode()
     async with s.post(BASE + path, data=raw, headers=_sign(key, sec, ts, raw)) as r:
-        return await r.json(content_type=None)
+        text = await r.text()
+        print(f"   HTTP {r.status}, тело: {text[:500] or '(пустое)'}")
+        if not text.strip():
+            return {"success": False, "message": f"пустой ответ HTTP {r.status} — скорее всего WAF/Akamai блокирует POST с этого IP"}
+        import json
+        return json.loads(text)
 
 
 async def delete(s: aiohttp.ClientSession, key: str, sec: str, path: str, body: dict) -> dict:
