@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import time
 import uuid
 from typing import Any
@@ -53,8 +54,15 @@ class MexcFuturesRestClient:
         self._contract_sizes: dict[str, float] = {}  # symbol → размер контракта
 
     async def start(self) -> None:
+        proxy_url = os.environ.get("MEXC_PROXY", "")
+        if proxy_url:
+            from aiohttp_socks import ProxyConnector
+            connector = ProxyConnector.from_url(proxy_url, limit=20)
+            logger.info("MEXC Futures REST: прокси подключён", proxy=proxy_url.split("@")[-1])
+        else:
+            connector = aiohttp.TCPConnector(limit=20, ttl_dns_cache=300)
         self._session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=20, ttl_dns_cache=300),
+            connector=connector,
             timeout=aiohttp.ClientTimeout(total=10),
         )
         await self._load_contract_sizes()
