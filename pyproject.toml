@@ -19,6 +19,7 @@ dependencies = [
     "prometheus-client>=0.20",
     "python-socks[asyncio]>=2.4",
     "aiohttp-socks>=0.8",
+    "curl_cffi>=0.7",
     "protobuf>=4.0",
 ]
 

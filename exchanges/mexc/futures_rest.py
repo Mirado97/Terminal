@@ -8,9 +8,9 @@ import time
 import uuid
 from typing import Any
 
-import aiohttp
 import orjson
 import structlog
+from curl_cffi.requests import AsyncSession
 
 from core.models import (
     Exchange, MarketType, Order, OrderSide, OrderStatus, OrderType,
@@ -46,36 +46,35 @@ class MexcFuturesRestClient:
     """
     MEXC Futures REST.
     place_order принимает qty_usdt + ref_price → конвертирует в контракты.
+    curl_cffi имитирует TLS-отпечаток Chrome для обхода Akamai WAF.
     """
 
     def __init__(self, credentials: ExchangeCredentials) -> None:
         self._creds = credentials
-        self._session: aiohttp.ClientSession | None = None
-        self._contract_sizes: dict[str, float] = {}  # symbol → размер контракта
+        self._session: AsyncSession | None = None      # с прокси — для auth запросов
+        self._pub_session: AsyncSession | None = None  # без прокси — для публичных GET
+        self._contract_sizes: dict[str, float] = {}    # symbol → размер контракта
 
     async def start(self) -> None:
         proxy_url = os.environ.get("MEXC_PROXY", "")
+        proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
         if proxy_url:
-            from aiohttp_socks import ProxyConnector
-            connector = ProxyConnector.from_url(proxy_url, limit=20)
             logger.info("MEXC Futures REST: прокси подключён", proxy=proxy_url.split("@")[-1])
-        else:
-            connector = aiohttp.TCPConnector(limit=20, ttl_dns_cache=300)
-        self._session = aiohttp.ClientSession(
-            connector=connector,
-            timeout=aiohttp.ClientTimeout(total=10),
-        )
+        self._session = AsyncSession(impersonate="chrome", proxies=proxies, timeout=10)
+        self._pub_session = AsyncSession(impersonate="chrome", timeout=30)
         await self._load_contract_sizes()
 
     async def stop(self) -> None:
         if self._session:
             await self._session.close()
+        if self._pub_session:
+            await self._pub_session.close()
 
     async def _load_contract_sizes(self) -> None:
         try:
-            assert self._session
-            async with self._session.get(f"{BASE_URL}/api/v1/contract/detail") as r:
-                data = await r.json(content_type=None)
+            assert self._pub_session
+            r = await self._pub_session.get(f"{BASE_URL}/api/v1/contract/detail")
+            data = orjson.loads(r.content)
             for c in data.get("data", []):
                 sym = c.get("symbol", "").replace("_", "")  # BTC_USDT → BTCUSDT
                 size = float(c.get("contractSize", 1) or 1)
@@ -184,29 +183,29 @@ class MexcFuturesRestClient:
         assert self._session
         ts = str(int(time.time() * 1000))
         qs = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
-        async with self._session.get(
+        r = await self._session.get(
             BASE_URL + path, params=params,
             headers=self._auth_headers(ts, self._sign(ts, qs)),
-        ) as r:
-            return await self._handle(r)
+        )
+        return self._handle(r)
 
     async def _post(self, path: str, body: dict) -> dict:
         assert self._session
         ts  = str(int(time.time() * 1000))
         raw = orjson.dumps(body).decode()
-        async with self._session.post(
+        r = await self._session.post(
             BASE_URL + path, data=raw,
             headers=self._auth_headers(ts, self._sign(ts, raw)),
-        ) as r:
-            return await self._handle(r)
+        )
+        return self._handle(r)
 
-    async def _handle(self, resp: aiohttp.ClientResponse) -> dict:
-        raw = await resp.read()
+    def _handle(self, resp: Any) -> dict:
+        raw = resp.content
         try:
             data: dict = orjson.loads(raw)
         except Exception as e:
             raise RuntimeError(
-                f"MEXC не JSON: status={resp.status}, raw={raw[:400]!r}"
+                f"MEXC не JSON: status={resp.status_code}, raw={raw[:400]!r}"
             ) from e
         if not data.get("success", True):
             raise RuntimeError(f"MEXC Futures API: {data.get('message', data)}")
