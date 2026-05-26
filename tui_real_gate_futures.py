@@ -808,7 +808,11 @@ async def main() -> None:
     from core.logging import setup_logging
     setup_logging(level="ERROR", json_output=False)
 
-    symbols = await fetch_symbols(500)
+    import config as _cfg
+    symbols = await fetch_symbols(
+        500,
+        min_volume=getattr(_cfg, "MIN_GATE_VOLUME_USDT", 50_000),
+    )
     _stats["pairs"] = len(symbols)
 
     bot_task = asyncio.create_task(bot_main_real(symbols))
