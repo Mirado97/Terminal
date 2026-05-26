@@ -649,7 +649,7 @@ async def bot_main_real(symbols: list[str]) -> None:
                     hdrs      = {"KEY": gate_key, "SIGN": sig, "Timestamp": ts, "Accept": "application/json"}
                     async with s.get(f"https://api.gateio.ws{path}", headers=hdrs) as r:
                         data = await r.json(content_type=None)
-                    val = float(data.get("available", 0) or 0) + float(data.get("order_margin", 0) or 0) + float(data.get("position_margin", 0) or 0)
+                    val = float(data.get("total", 0) or 0)
                     _stats["gate_usdt"] = val
                     if _stats["gate_usdt_start"] < 0:
                         _stats["gate_usdt_start"] = val
