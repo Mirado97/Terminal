@@ -76,13 +76,11 @@ MAX_HOLD_S           = 60
 MAX_POSITIONS        = 3
 COOLDOWN_S           = 1800
 MIN_ENTRY_INTERVAL_S = 60.0
-MIN_SPREAD_AGE_MS    = 200  # спред должен держаться N мс перед входом (защита от спайков)
 
 
 def _reload_config() -> None:
     global ENTRY_THRESHOLD, EXIT_THRESHOLD, MAX_HOLD_S, DYNAMIC_EXIT_RATIO
     global MAX_POSITIONS, COOLDOWN_S, VIRTUAL_SIZE_USDT, MIN_ENTRY_INTERVAL_S
-    global MIN_SPREAD_AGE_MS
     try:
         if "config" in sys.modules:
             mod = importlib.reload(sys.modules["config"])
@@ -96,7 +94,6 @@ def _reload_config() -> None:
         COOLDOWN_S           = int(getattr(mod,   "COOLDOWN_S",           COOLDOWN_S))
         VIRTUAL_SIZE_USDT    = float(getattr(mod, "VIRTUAL_SIZE_USDT",    VIRTUAL_SIZE_USDT))
         MIN_ENTRY_INTERVAL_S = float(getattr(mod, "MIN_ENTRY_INTERVAL_S", MIN_ENTRY_INTERVAL_S))
-        MIN_SPREAD_AGE_MS    = int(getattr(mod,   "MIN_SPREAD_AGE_MS",    MIN_SPREAD_AGE_MS))
     except Exception:
         pass
 
@@ -473,8 +470,10 @@ async def bot_main_real(symbols: list[str]) -> None:
                             f"ep={ep:.2f}bps reason={close_reason}\n"
                         )
 
-                    pnl_bps  = entry_ep - ep - FEE_BPS
-                    pnl_usdt = round(VIRTUAL_SIZE_USDT * pnl_bps / 10_000, 2)
+                    long_pnl  = (close_long_fill  - pos["entry_buy_price"])  * pos["buy_qty"]
+                    short_pnl = (pos["entry_sell_price"] - close_short_fill) * pos["sell_qty"]
+                    pnl_usdt  = round(long_pnl + short_pnl - total_fee, 2)
+                    pnl_bps   = round(pnl_usdt / VIRTUAL_SIZE_USDT * 10_000, 2) if VIRTUAL_SIZE_USDT > 0 else 0.0
                     _portfolio["realized_pnl"] += pnl_usdt
                     hold_ms = int(hold_mono * 1000)
 
@@ -524,10 +523,6 @@ async def bot_main_real(symbols: list[str]) -> None:
                             return
                         current = _spread_map.get(_key)
                         if current is None or current["executable_spread_bps"] < ENTRY_THRESHOLD:
-                            return
-                        # Фильтр спайков: спред должен держаться минимальное время
-                        age_ms = int((time.monotonic() - current["_first_seen_ts"]) * 1000)
-                        if age_ms < MIN_SPREAD_AGE_MS:
                             return
 
                         actual_ep  = current["executable_spread_bps"]
