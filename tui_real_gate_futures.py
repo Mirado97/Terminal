@@ -758,7 +758,7 @@ async def _key_task() -> None:
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 
 
-async def fetch_symbols(n: int = 500, min_volume: float = 1_000_000) -> list[str]:
+async def fetch_symbols(n: int = 500, min_volume: float = 50_000) -> list[str]:
     """Топ N пар, доступных на Bybit Linear И Gate.io Futures с объёмом > min_volume USDT."""
     from run import _BLACKLIST, _FALLBACK_SYMBOLS
     headers = {"User-Agent": _UA}
