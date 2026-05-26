@@ -31,7 +31,7 @@ from run import _BLACKLIST as _BASE_BLACKLIST  # noqa: E402
 
 try:
     import config as _cfg_bl
-    _BLACKLIST: set = _BASE_BLACKLIST | set(getattr(_cfg_bl, "GATE_BLACKLIST", set()))
+    _BLACKLIST: set = _BASE_BLACKLIST | set(getattr(_cfg_bl, "GATE_BLACKLIST", []))
 except Exception:
     _BLACKLIST = _BASE_BLACKLIST
 
