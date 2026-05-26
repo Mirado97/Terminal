@@ -27,7 +27,13 @@ from rich.text import Text
 
 load_dotenv(Path(".env"))
 
-from run import _BLACKLIST  # noqa: E402
+from run import _BLACKLIST as _BASE_BLACKLIST  # noqa: E402
+
+try:
+    import config as _cfg_bl
+    _BLACKLIST: set = _BASE_BLACKLIST | set(getattr(_cfg_bl, "GATE_BLACKLIST", set()))
+except Exception:
+    _BLACKLIST = _BASE_BLACKLIST
 
 # ── Shared state ──────────────────────────────────────────────────────────
 _spread_map: dict[tuple, dict] = {}
